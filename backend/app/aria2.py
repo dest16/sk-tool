@@ -53,12 +53,34 @@ class Aria2Client:
             config_lines.append(f"all-proxy={self.proxy}")
         return config_lines
 
+    def _prepare_session_file(self) -> None:
+        """Ensure aria2's input/save session path is a writable regular file.
+
+        aria2 opens ``input-file`` during startup.  On a fresh bind mount the
+        file does not exist yet, so aria2 exits before it can create the file
+        through ``save-session``.  Create it first and reject symlinks or
+        directories instead of following or replacing user data.
+        """
+        session_path = self.settings.aria2_session_file
+        try:
+            if session_path.is_symlink():
+                raise Aria2Error(f"aria2 会话路径不能是符号链接：{session_path}")
+            if session_path.exists() and not session_path.is_file():
+                raise Aria2Error(f"aria2 会话路径是目录或特殊文件：{session_path}")
+            session_path.touch(exist_ok=True)
+            session_path.chmod(0o600)
+        except Aria2Error:
+            raise
+        except OSError as exc:
+            raise Aria2Error(f"aria2 会话文件不可写：{session_path}：{exc}") from exc
+
     async def start(self) -> None:
         async with self._start_lock:
             if self.process and self.process.returncode is None:
                 return
             self.settings.config_dir.mkdir(parents=True, exist_ok=True)
             self.settings.download_dir.mkdir(parents=True, exist_ok=True)
+            self._prepare_session_file()
             conf_path = self.settings.config_dir / "aria2.conf"
             config_lines = self._config_lines()
             conf_path.write_text("\n".join(config_lines) + "\n", encoding="utf-8")
