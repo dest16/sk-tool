@@ -98,6 +98,28 @@ async def test_metadata_completion_follows_child_gid(tmp_path: Path):
     assert aria2.removed == ["metadata-gid"]
 
 
+async def test_metadata_file_size_is_not_reported_as_payload_size(tmp_path: Path):
+    task = _task(tmp_path)
+    aria2 = _Aria2(
+        {
+            "status": "active",
+            "totalLength": "546500",
+            "completedLength": "498500",
+            "downloadSpeed": "12000",
+            "files": [{"path": str(tmp_path / "staging" / "[METADATA]resource.torrent")}],
+        }
+    )
+    manager = DownloadManager(object(), _SessionFactory(task), aria2)
+
+    await _poll(manager, task)
+
+    assert task.status == "metadata"
+    assert task.total_bytes == 0
+    assert task.completed_bytes == 0
+    assert task.download_speed == 0
+    assert task.eta_seconds is None
+
+
 async def test_completed_download_is_saved_even_if_result_cleanup_returns_400(tmp_path: Path):
     task = _task(tmp_path, gid="torrent-gid")
     aria2 = _Aria2(

@@ -10,6 +10,13 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+def is_metadata_file(file_info: dict[str, Any]) -> bool:
+    """Return whether aria2 reported its temporary magnet metadata file."""
+    path = str(file_info.get("path") or "").replace("\\", "/")
+    name = path.rsplit("/", 1)[-1]
+    return name.lower().startswith("[metadata]")
+
+
 class Aria2Error(RuntimeError):
     def __init__(self, message: str, *, code: int | str | None = None, status_code: int | None = None):
         super().__init__(message)

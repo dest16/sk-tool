@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .aria2 import Aria2Client, Aria2Error
+from .aria2 import Aria2Client, Aria2Error, is_metadata_file
 from .config import get_settings
 from .db import Base, create_database
 from .indexer import CATEGORY_OPTIONS, SORT_OPTIONS, IndexerError, SearchService, SukebeiAdapter
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 
 def _serialize_files(task: DownloadTask, aria_files: list[dict] | None = None) -> list[dict]:
-    if aria_files:
+    if aria_files is not None:
         return [
             {
                 "path": item.get("path", "").replace(str(task.staging_dir), "<暂存目录>"),
@@ -45,6 +45,7 @@ def _serialize_files(task: DownloadTask, aria_files: list[dict] | None = None) -
                 "selected": item.get("selected") == "true",
             }
             for item in aria_files
+            if not is_metadata_file(item)
         ]
     root = Path(task.staging_dir)
     if not root.exists():

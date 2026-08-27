@@ -6,7 +6,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from .aria2 import Aria2Client, Aria2Error
+from .aria2 import Aria2Client, Aria2Error, is_metadata_file
 from .files import MoveConflictError, UnsafePathError, move_download
 from .models import DownloadTask, utc_now
 
@@ -179,18 +179,24 @@ class DownloadManager:
                     await self._update(task.id, error=str(exc))
                 continue
             state = status.get("status", "")
+            aria_files = status.get("files") or []
+            metadata_only = bool(aria_files) and all(is_metadata_file(item) for item in aria_files)
             updates = {
                 "total_bytes": int(status.get("totalLength") or 0),
                 "completed_bytes": int(status.get("completedLength") or 0),
                 "download_speed": float(status.get("downloadSpeed") or 0),
                 "error": status.get("errorMessage") or None,
             }
+            if metadata_only:
+                # aria2 exposes the temporary .torrent metadata as a regular
+                # file. Its size is not the size of the requested payload.
+                updates.update(total_bytes=0, completed_bytes=0, download_speed=0, eta_seconds=None)
             remaining = updates["total_bytes"] - updates["completed_bytes"]
             updates["eta_seconds"] = int(remaining / updates["download_speed"]) if remaining > 0 and updates["download_speed"] > 0 else None
             if state == "active":
-                updates["status"] = "metadata" if not updates["total_bytes"] else "downloading"
+                updates["status"] = "metadata" if metadata_only or not updates["total_bytes"] else "downloading"
             elif state == "waiting":
-                updates["status"] = "waiting"
+                updates["status"] = "metadata" if metadata_only else "waiting"
             elif state == "paused":
                 updates["status"] = "paused"
             elif state == "complete":

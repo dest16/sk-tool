@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from app.aria2 import Aria2Client, Aria2Error
+from app.aria2 import Aria2Client, Aria2Error, is_metadata_file
 from app.config import Settings
 
 
@@ -21,6 +21,12 @@ def test_aria2_config_exposes_p2p_port_and_upnp(tmp_path: Path):
     assert "enable-peer-exchange=true" in lines
     assert "enable-upnp=true" in lines
     assert "rpc-listen-all=false" in lines
+
+
+def test_metadata_file_detection_uses_basename():
+    assert is_metadata_file({"path": "/downloads/job/[METADATA]resource.torrent"})
+    assert is_metadata_file({"path": r"C:\downloads\job\[metadata]resource.torrent"})
+    assert not is_metadata_file({"path": "/downloads/job/resource.mkv"})
 
 
 async def test_aria2_status_requests_followed_by_field(tmp_path: Path):
