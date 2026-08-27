@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     cookie_secure: bool = False
     aria2_rpc_host: str = "127.0.0.1"
     aria2_rpc_port: int = 6800
+    # BitTorrent/DHT listen port, exposed by Docker over TCP and UDP.
+    aria2_p2p_port: int = Field(default=51413, ge=1024, le=65535)
     aria2_binary: str = "aria2c"
     aria2_rpc_secret_file: Path | None = None
 

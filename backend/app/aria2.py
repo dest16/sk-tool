@@ -26,6 +26,33 @@ class Aria2Client:
     def endpoint(self) -> str:
         return f"http://{self.settings.aria2_rpc_host}:{self.settings.aria2_rpc_port}/jsonrpc"
 
+    def _config_lines(self) -> list[str]:
+        """Build aria2 configuration while keeping RPC private."""
+        config_lines = [
+            "enable-rpc=true",
+            "rpc-listen-all=false",
+            f"rpc-listen-port={self.settings.aria2_rpc_port}",
+            f"rpc-secret={self.secret}",
+            # BitTorrent/DHT inbound traffic uses the same configurable port.
+            f"listen-port={self.settings.aria2_p2p_port}",
+            f"dht-listen-port={self.settings.aria2_p2p_port}",
+            "enable-dht=true",
+            "enable-peer-exchange=true",
+            "enable-upnp=true",
+            f"dir={self.settings.download_dir}",
+            f"save-session={self.settings.aria2_session_file}",
+            f"input-file={self.settings.aria2_session_file}",
+            "save-session-interval=10",
+            "continue=true",
+            "seed-time=0",
+            "seed-ratio=0",
+            "file-allocation=none",
+            "summary-interval=0",
+        ]
+        if self.proxy:
+            config_lines.append(f"all-proxy={self.proxy}")
+        return config_lines
+
     async def start(self) -> None:
         async with self._start_lock:
             if self.process and self.process.returncode is None:
@@ -33,23 +60,7 @@ class Aria2Client:
             self.settings.config_dir.mkdir(parents=True, exist_ok=True)
             self.settings.download_dir.mkdir(parents=True, exist_ok=True)
             conf_path = self.settings.config_dir / "aria2.conf"
-            config_lines = [
-                "enable-rpc=true",
-                "rpc-listen-all=false",
-                f"rpc-listen-port={self.settings.aria2_rpc_port}",
-                f"rpc-secret={self.secret}",
-                f"dir={self.settings.download_dir}",
-                f"save-session={self.settings.aria2_session_file}",
-                f"input-file={self.settings.aria2_session_file}",
-                "save-session-interval=10",
-                "continue=true",
-                "seed-time=0",
-                "seed-ratio=0",
-                "file-allocation=none",
-                "summary-interval=0",
-            ]
-            if self.proxy:
-                config_lines.append(f"all-proxy={self.proxy}")
+            config_lines = self._config_lines()
             conf_path.write_text("\n".join(config_lines) + "\n", encoding="utf-8")
             try:
                 conf_path.chmod(0o600)

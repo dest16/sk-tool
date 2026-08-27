@@ -20,6 +20,15 @@ docker compose logs -f sukebei-manager
 | `/downloads` | 每个任务的下载暂存目录 |
 | `/library` | 下载完成后的唯一整理目录 |
 
+服务端口：
+
+| 宿主机端口 | 用途 |
+| --- | --- |
+| `8080/tcp` | Web 界面和 API |
+| `51413/tcp`、`51413/udp` | aria2 BitTorrent/DHT 入站端口 |
+
+aria2 已启用 DHT、PEX 和 UPnP/NAT-PMP。若宿主机端口被占用，可在 `.env` 中修改 `ARIA2_P2P_PORT`，然后重新创建容器。Docker 映射端口和 aria2 监听端口会保持一致；RPC 端口仍只监听容器内回环地址，不对外暴露。
+
 如果 NAS 使用其它 UID/GID，可在启动前设置 `PUID` 和 `PGID`。挂载目录必须已经允许该用户读写。
 
 ## 开发
@@ -56,5 +65,4 @@ pytest -q
 - 只接受合法 BTIH magnet；整理操作拒绝路径穿越、符号链接和目标覆盖。
 - 站点和 aria2 代理可在设置中分别配置，凭据不会出现在 API 响应或日志中。
 - 建议通过 HTTPS 反向代理暴露服务，并遵守目标站点、内容来源和所在地区的适用法律及服务条款。
-
 

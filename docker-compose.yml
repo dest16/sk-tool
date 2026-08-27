@@ -6,10 +6,14 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
+      # aria2 BitTorrent/DHT inbound traffic (UPnP may also map this port).
+      - "${ARIA2_P2P_PORT:-51413}:${ARIA2_P2P_PORT:-51413}/tcp"
+      - "${ARIA2_P2P_PORT:-51413}:${ARIA2_P2P_PORT:-51413}/udp"
     user: "${PUID:-1000}:${PGID:-1000}"
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       SUKEBEI_COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      SUKEBEI_ARIA2_P2P_PORT: ${ARIA2_P2P_PORT:-51413}
     volumes:
       - ./data/config:/config
       - ./data/downloads:/downloads
