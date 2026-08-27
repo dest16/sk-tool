@@ -1,21 +1,11 @@
-# Local configuration and runtime data
 data/
-.env
-
-# Python
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.coverage
-backend/.test-tmp/
-
-# Frontend
 frontend/node_modules/
 frontend/dist/
-frontend/.npm-cache/
-frontend/*.tsbuildinfo
+backend/.pytest_cache/
+backend/.test-tmp/
+backend/**/__pycache__/
+*.pyc
+.pytest_cache/
+.npm-cache/
+*.tsbuildinfo
 
-# IDE
-.vscode/
-.idea/
-.DS_Store

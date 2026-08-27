@@ -1,0 +1,23 @@
+services:
+  sukebei-manager:
+    build: .
+    image: sukebei-manager:latest
+    container_name: sukebei-manager
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      SUKEBEI_COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    volumes:
+      - ./data/config:/config
+      - ./data/downloads:/downloads
+      - ./data/library:/library
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)); raise SystemExit(0 if data.get('ok') and data.get('aria2') else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
