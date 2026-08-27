@@ -55,8 +55,9 @@ class _Aria2:
 
 
 class _ActionSession:
-    def __init__(self, task):
+    def __init__(self, task, factory):
         self.task = task
+        self.factory = factory
 
     async def __aenter__(self):
         return self
@@ -73,13 +74,17 @@ class _ActionSession:
     async def refresh(self, task):
         return None
 
+    async def delete(self, task):
+        self.factory.deleted.append(task.id)
+
 
 class _ActionSessionFactory:
     def __init__(self, task):
         self.task = task
+        self.deleted = []
 
     def __call__(self):
-        return _ActionSession(self.task)
+        return _ActionSession(self.task, self)
 
 
 class _ActionAria2:
@@ -183,13 +188,15 @@ async def test_cancel_deletes_staging_files_by_default(tmp_path: Path):
     (staging / "partial.bin").write_bytes(b"partial")
     settings = type("Settings", (), {"download_dir": tmp_path, "library_dir": tmp_path / "library"})()
     aria2 = _ActionAria2()
-    manager = DownloadManager(settings, _ActionSessionFactory(task), aria2)
+    session_factory = _ActionSessionFactory(task)
+    manager = DownloadManager(settings, session_factory, aria2)
 
     result = await manager.action(task.id, "cancel")
 
     assert result.status == "cancelled"
     assert aria2.removed == ["active-gid"]
     assert not staging.exists()
+    assert session_factory.deleted == [task.id]
 
 
 async def test_cancel_can_keep_staging_files_when_explicitly_requested(tmp_path: Path):
@@ -198,11 +205,13 @@ async def test_cancel_can_keep_staging_files_when_explicitly_requested(tmp_path:
     staging.mkdir(parents=True)
     (staging / "partial.bin").write_bytes(b"partial")
     settings = type("Settings", (), {"download_dir": tmp_path, "library_dir": tmp_path / "library"})()
-    manager = DownloadManager(settings, _ActionSessionFactory(task), _ActionAria2())
+    session_factory = _ActionSessionFactory(task)
+    manager = DownloadManager(settings, session_factory, _ActionAria2())
 
     result = await manager.action(task.id, "cancel", delete_files=False)
 
     assert result.status == "cancelled"
     assert staging.exists()
     assert result.error == "任务已删除，暂存文件已保留"
+    assert session_factory.deleted == [task.id]
 

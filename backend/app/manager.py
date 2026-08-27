@@ -71,6 +71,7 @@ class DownloadManager:
         task = await self.get(task_id)
         if not task:
             raise KeyError("任务不存在")
+        cancel_delete_error: str | None = None
         if action == "pause" and task.gid:
             await self.aria2.pause(task.gid)
             task.status = "paused"
@@ -84,7 +85,8 @@ class DownloadManager:
                 await self.aria2.remove(task.gid)
             task.status = "cancelled"
             if delete_files:
-                task.error = await self._delete_staging(task.staging_dir)
+                cancel_delete_error = await self._delete_staging(task.staging_dir)
+                task.error = cancel_delete_error
             else:
                 task.error = "任务已删除，暂存文件已保留"
         elif action == "retry":
@@ -109,6 +111,15 @@ class DownloadManager:
         async with self.session_factory() as session:
             db_task = await session.get(DownloadTask, task_id)
             if db_task:
+                if action == "cancel" and cancel_delete_error is None:
+                    # Cancellation is a destructive delete operation: once
+                    # aria2 is stopped and the optional staging cleanup has
+                    # succeeded, remove the task row as well so it no longer
+                    # appears in the task list.  The detached object is still
+                    # returned to the API caller for a final acknowledgement.
+                    await session.delete(db_task)
+                    await session.commit()
+                    return task
                 for key, value in task.__dict__.items():
                     if key not in {"_sa_instance_state", "id"}:
                         setattr(db_task, key, value)
