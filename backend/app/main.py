@@ -28,6 +28,7 @@ from .schemas import (
     ProxySettingsResponse,
     SearchResponse,
     SetupRequest,
+    SyncFilterSettings,
 )
 from .security import hash_password, new_token, session_for, token_hash, verify_password
 
@@ -252,7 +253,7 @@ async def search(
 
 @app.get("/api/meta")
 async def meta(context=Depends(require_user)):
-    return {"categories": CATEGORY_OPTIONS, "sorts": SORT_OPTIONS, "statuses": {"waiting": "排队中", "metadata": "获取元数据", "downloading": "下载中", "paused": "已暂停", "completed_pending_move": "完成待整理", "moving": "整理中", "moved": "已整理", "conflict": "名称冲突", "failed": "失败", "cancelled": "已取消"}}
+    return {"categories": CATEGORY_OPTIONS, "sorts": SORT_OPTIONS, "statuses": {"waiting": "排队中", "metadata": "获取元数据", "downloading": "下载中", "paused": "已暂停", "completed_pending_move": "完成待整理", "moving": "整理中", "moved": "已整理", "conflict": "名称冲突", "filtered": "无文件符合过滤条件", "failed": "失败", "cancelled": "已取消"}}
 
 
 @app.get("/api/downloads", response_model=DownloadListResponse)
@@ -303,7 +304,7 @@ async def delete_history(task_id: str, context=Depends(require_write), session: 
     task = await session.get(DownloadTask, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-    if task.status not in {"moved", "failed", "cancelled", "conflict", "completed_pending_move"}:
+    if task.status not in {"moved", "failed", "cancelled", "conflict", "filtered", "completed_pending_move"}:
         raise HTTPException(status_code=409, detail="活动任务不能删除历史")
     await session.delete(task)
     await session.commit()
@@ -351,6 +352,52 @@ async def put_proxy(payload: ProxySettings, context=Depends(require_write), sess
     return ProxySettingsResponse(
         **values,
     )
+
+
+@app.get("/api/settings/filters")
+async def get_filters(context=Depends(require_user), session: AsyncSession = Depends(db_session)):
+    values: dict[str, str] = {}
+    for key in ("sync_filename_regex", "sync_min_size_bytes", "sync_max_size_bytes"):
+        setting = await session.get(Setting, key)
+        values[key] = setting.value.strip() if setting and setting.value else ""
+    try:
+        min_size = int(values["sync_min_size_bytes"]) if values["sync_min_size_bytes"] else None
+        max_size = int(values["sync_max_size_bytes"]) if values["sync_max_size_bytes"] else None
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail="已保存的文件大小过滤配置无效") from exc
+    return {"filename_regex": values["sync_filename_regex"] or None, "min_size_bytes": min_size, "max_size_bytes": max_size}
+
+
+@app.put("/api/settings/filters")
+async def put_filters(payload: SyncFilterSettings, context=Depends(require_write), session: AsyncSession = Depends(db_session)):
+    current: dict[str, str] = {}
+    for key in ("sync_filename_regex", "sync_min_size_bytes", "sync_max_size_bytes"):
+        setting = await session.get(Setting, key)
+        current[key] = setting.value.strip() if setting and setting.value else ""
+    field_to_key = {
+        "filename_regex": "sync_filename_regex",
+        "min_size_bytes": "sync_min_size_bytes",
+        "max_size_bytes": "sync_max_size_bytes",
+    }
+    for field in payload.model_fields_set:
+        key = field_to_key[field]
+        value = getattr(payload, field)
+        current[key] = "" if value is None else str(value)
+    try:
+        min_size = int(current["sync_min_size_bytes"]) if current["sync_min_size_bytes"] else None
+        max_size = int(current["sync_max_size_bytes"]) if current["sync_max_size_bytes"] else None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="文件大小必须是整数") from exc
+    if min_size is not None and max_size is not None and min_size > max_size:
+        raise HTTPException(status_code=422, detail="最小文件大小不能大于最大文件大小")
+    for key, value in current.items():
+        setting = await session.get(Setting, key)
+        if setting:
+            setting.value = value
+        else:
+            session.add(Setting(key=key, value=value))
+    await session.commit()
+    return {"filename_regex": current["sync_filename_regex"] or None, "min_size_bytes": min_size, "max_size_bytes": max_size}
 
 
 @app.get("/{path:path}")

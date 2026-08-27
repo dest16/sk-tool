@@ -27,4 +27,19 @@ def test_setup_login_csrf_and_redacted_proxy():
         assert proxy.status_code == 200
         assert proxy.json()["indexer_proxy"] is None
         assert proxy.json()["indexer_proxy_configured"] is True
+        filters = client.get("/api/settings/filters")
+        assert filters.status_code == 200
+        assert filters.json() == {"filename_regex": None, "min_size_bytes": None, "max_size_bytes": None}
+        saved_filters = client.put(
+            "/api/settings/filters",
+            headers={"X-CSRF-Token": csrf},
+            json={"filename_regex": r"\.(mkv|mp4)$", "min_size_bytes": 1024, "max_size_bytes": 1048576},
+        )
+        assert saved_filters.status_code == 200
+        assert saved_filters.json()["min_size_bytes"] == 1024
+        assert client.put(
+            "/api/settings/filters",
+            headers={"X-CSRF-Token": csrf},
+            json={"filename_regex": "["},
+        ).status_code == 422
 

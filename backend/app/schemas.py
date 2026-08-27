@@ -1,4 +1,5 @@
 from datetime import datetime
+import re
 from urllib.parse import urlparse
 from pydantic import BaseModel, Field, field_validator
 
@@ -70,6 +71,25 @@ class ProxySettingsResponse(BaseModel):
     aria2_proxy: str | None = None
     indexer_proxy_configured: bool = False
     aria2_proxy_configured: bool = False
+
+
+class SyncFilterSettings(BaseModel):
+    filename_regex: str | None = Field(default=None, max_length=200)
+    min_size_bytes: int | None = Field(default=None, ge=0, le=2**63 - 1)
+    max_size_bytes: int | None = Field(default=None, ge=0, le=2**63 - 1)
+
+    @field_validator("filename_regex")
+    @classmethod
+    def validate_filename_regex(cls, value: str | None) -> str | None:
+        if value in (None, ""):
+            return None
+        if any(ord(char) < 32 for char in value):
+            raise ValueError("文件名正则不能包含控制字符")
+        try:
+            re.compile(value)
+        except re.error as exc:
+            raise ValueError(f"文件名正则无效：{exc}") from exc
+        return value
 
 
 class DownloadResponse(BaseModel):

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from app.files import MoveConflictError, UnsafePathError, move_download, safe_name
+from app.files import MoveConflictError, NoMatchingFilesError, UnsafePathError, move_download, safe_name
 
 
 def test_safe_name():
@@ -57,4 +57,55 @@ def test_symlink_is_rejected(tmp_path: Path):
         raise
     with pytest.raises(UnsafePathError):
         move_download(staging, library, "title", "job")
+
+
+def test_filter_moves_matching_files_and_leaves_skipped_files(tmp_path: Path):
+    staging = tmp_path / "downloads" / "job"
+    library = tmp_path / "library"
+    staging.mkdir(parents=True)
+    (staging / "movie.mkv").write_bytes(b"12345")
+    (staging / "sample.txt").write_bytes(b"x")
+    skipped: list[str] = []
+
+    assert move_download(staging, library, "title", "job", filename_regex=r"\.mkv$", skipped=skipped) == "title"
+    assert (library / "title" / "movie.mkv").read_bytes() == b"12345"
+    assert (staging / "sample.txt").read_bytes() == b"x"
+    assert skipped == ["sample.txt"]
+
+
+def test_filter_applies_size_bounds(tmp_path: Path):
+    staging = tmp_path / "downloads" / "job"
+    library = tmp_path / "library"
+    staging.mkdir(parents=True)
+    (staging / "small.bin").write_bytes(b"1")
+    (staging / "large.bin").write_bytes(b"1234")
+
+    move_download(staging, library, "title", "job", min_size_bytes=2, max_size_bytes=4)
+
+    assert (library / "title" / "large.bin").exists()
+    assert (staging / "small.bin").exists()
+
+
+def test_filter_with_no_matches_keeps_staging(tmp_path: Path):
+    staging = tmp_path / "downloads" / "job"
+    library = tmp_path / "library"
+    staging.mkdir(parents=True)
+    (staging / "clip.txt").write_text("ok")
+
+    with pytest.raises(NoMatchingFilesError):
+        move_download(staging, library, "title", "job", filename_regex=r"\.mkv$")
+    assert (staging / "clip.txt").exists()
+    assert not library.exists()
+
+
+def test_filter_rejects_invalid_regex_and_range(tmp_path: Path):
+    staging = tmp_path / "downloads" / "job"
+    library = tmp_path / "library"
+    staging.mkdir(parents=True)
+    (staging / "clip.txt").write_text("ok")
+
+    with pytest.raises(ValueError):
+        move_download(staging, library, "title", "job", filename_regex="[")
+    with pytest.raises(ValueError):
+        move_download(staging, library, "title", "job", min_size_bytes=10, max_size_bytes=1)
 

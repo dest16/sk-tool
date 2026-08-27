@@ -7,12 +7,12 @@ from pathlib import Path
 from sqlalchemy import select
 
 from .aria2 import Aria2Client, Aria2Error, is_metadata_file
-from .files import MoveConflictError, UnsafePathError, move_download
-from .models import DownloadTask, utc_now
+from .files import InvalidFilterError, MoveConflictError, NoMatchingFilesError, UnsafePathError, move_download
+from .models import DownloadTask, Setting, utc_now
 
 logger = logging.getLogger(__name__)
 
-TERMINAL = {"moved", "failed", "cancelled", "conflict"}
+TERMINAL = {"moved", "failed", "cancelled", "conflict", "filtered"}
 
 
 class DownloadManager:
@@ -78,7 +78,7 @@ class DownloadManager:
             await self.aria2.resume(task.gid)
             task.status = "waiting"
         elif action == "cancel":
-            if task.gid:
+            if task.gid and task.status not in {"completed_pending_move", "moving", "conflict", "filtered"}:
                 await self.aria2.remove(task.gid)
             task.status = "cancelled"
         elif action == "retry":
@@ -90,8 +90,8 @@ class DownloadManager:
             task.status = "waiting"
             task.error = None
         elif action == "cleanup":
-            if task.status not in {"failed", "cancelled"}:
-                raise ValueError("只有失败或已取消的任务可以清理暂存文件")
+            if task.status not in {"failed", "cancelled", "filtered"}:
+                raise ValueError("只有失败、已取消或被过滤的任务可以清理暂存文件")
             staging = Path(task.staging_dir)
             root = self.settings.download_dir.resolve()
             if staging.is_symlink() or staging.resolve() == root or not staging.resolve().is_relative_to(root):
@@ -118,10 +118,12 @@ class DownloadManager:
     async def move(self, task: DownloadTask) -> None:
         lock = self._move_locks.setdefault(task.id, asyncio.Lock())
         async with lock:
-            if task.status not in {"completed_pending_move", "conflict"}:
+            if task.status not in {"completed_pending_move", "conflict", "filtered"}:
                 raise ValueError("任务尚未完成，不能整理")
             task.status = "moving"
+            skipped: list[str] = []
             try:
+                filename_regex, min_size_bytes, max_size_bytes = await self._sync_filters()
                 await asyncio.to_thread(
                     move_download,
                     Path(task.staging_dir),
@@ -129,7 +131,19 @@ class DownloadManager:
                     task.title,
                     task.id,
                     self.settings.download_dir,
+                    filename_regex=filename_regex,
+                    min_size_bytes=min_size_bytes,
+                    max_size_bytes=max_size_bytes,
+                    skipped=skipped,
                 )
+            except NoMatchingFilesError as exc:
+                task.status = "filtered"
+                task.error = str(exc)
+                return
+            except InvalidFilterError as exc:
+                task.status = "failed"
+                task.error = f"整理过滤规则无效：{exc}"
+                return
             except MoveConflictError as exc:
                 task.status = "conflict"
                 task.error = str(exc)
@@ -139,8 +153,28 @@ class DownloadManager:
                 task.error = f"整理失败：{exc}"
                 return
             task.status = "moved"
-            task.error = None
+            task.error = f"已同步，跳过 {len(skipped)} 个不符合过滤条件的文件" if skipped else None
             task.moved_at = utc_now()
+
+    async def _sync_filters(self) -> tuple[str | None, int | None, int | None]:
+        async with self.session_factory() as session:
+            values: dict[str, str] = {}
+            for key in ("sync_filename_regex", "sync_min_size_bytes", "sync_max_size_bytes"):
+                setting = await session.get(Setting, key)
+                values[key] = setting.value if setting else ""
+        filename_regex = values["sync_filename_regex"] or None
+        sizes: list[int | None] = []
+        for key in ("sync_min_size_bytes", "sync_max_size_bytes"):
+            raw = values[key].strip()
+            if not raw:
+                sizes.append(None)
+                continue
+            try:
+                parsed = int(raw)
+            except ValueError as exc:
+                raise InvalidFilterError(f"{key} 不是有效的整数") from exc
+            sizes.append(parsed)
+        return filename_regex, sizes[0], sizes[1]
 
     async def poll_loop(self) -> None:
         while True:
