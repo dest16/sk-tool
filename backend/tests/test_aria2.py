@@ -23,6 +23,28 @@ def test_aria2_config_exposes_p2p_port_and_upnp(tmp_path: Path):
     assert "rpc-listen-all=false" in lines
 
 
+async def test_aria2_status_requests_followed_by_field(tmp_path: Path):
+    settings = Settings(
+        config_dir=tmp_path / "config",
+        download_dir=tmp_path / "downloads",
+        library_dir=tmp_path / "library",
+    )
+    client = Aria2Client(settings)
+    seen: dict[str, object] = {}
+
+    async def fake_call(method: str, params: list[object]):
+        seen["method"] = method
+        seen["params"] = params
+        return {"status": "complete", "followedBy": ["child-gid"]}
+
+    client.call = fake_call  # type: ignore[method-assign]
+    result = await client.status("parent-gid")
+
+    assert result["followedBy"] == ["child-gid"]
+    assert seen["method"] == "aria2.tellStatus"
+    assert "followedBy" in seen["params"][1]  # type: ignore[index]
+
+
 def test_aria2_session_file_is_created_before_start(tmp_path: Path):
     settings = Settings(
         config_dir=tmp_path / "config",

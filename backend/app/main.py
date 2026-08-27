@@ -262,7 +262,7 @@ async def downloads(context=Depends(require_user), aria: Aria2Client = Depends(l
     items = []
     for task in tasks:
         files = None
-        if task.gid and task.status in {"waiting", "downloading", "paused"}:
+        if task.gid and task.status in {"waiting", "metadata", "downloading", "paused"}:
             try:
                 files = (await aria.status(task.gid)).get("files")
             except Exception:

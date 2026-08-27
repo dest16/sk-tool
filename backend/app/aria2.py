@@ -11,7 +11,10 @@ logger = logging.getLogger(__name__)
 
 
 class Aria2Error(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: int | str | None = None, status_code: int | None = None):
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
 
 
 class Aria2Client:
@@ -133,13 +136,37 @@ class Aria2Client:
         async with httpx.AsyncClient(timeout=10) as client:
             try:
                 response = await client.post(self.endpoint, json=payload)
-                response.raise_for_status()
-                result = response.json()
-            except (httpx.HTTPError, json.JSONDecodeError) as exc:
+            except httpx.HTTPError as exc:
                 raise Aria2Error(f"aria2 RPC 请求失败：{exc}") from exc
+
+            try:
+                result = response.json()
+            except json.JSONDecodeError as exc:
+                body = response.text[:500]
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as status_exc:
+                    raise Aria2Error(
+                        f"aria2 RPC HTTP {response.status_code}：{body or status_exc}",
+                        status_code=response.status_code,
+                    ) from status_exc
+                raise Aria2Error(f"aria2 RPC 响应不是有效 JSON：{body}", status_code=response.status_code) from exc
         if "error" in result:
             error = result["error"]
-            raise Aria2Error(f"aria2：{error.get('message', '未知错误')}")
+            code = error.get("code")
+            prefix = f"[{code}] " if code is not None else ""
+            raise Aria2Error(
+                f"aria2：{prefix}{error.get('message', '未知错误')}",
+                code=code,
+                status_code=response.status_code,
+            )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise Aria2Error(
+                f"aria2 RPC HTTP {response.status_code}：{response.text[:500]}",
+                status_code=response.status_code,
+            ) from exc
         return result.get("result")
 
     async def add_magnet(self, magnet: str, directory: Path) -> str:
@@ -163,6 +190,7 @@ class Aria2Client:
             "errorMessage",
             "files",
             "dir",
+            "followedBy",
         ]
         return await self.call("aria2.tellStatus", [gid, fields])
 
@@ -176,10 +204,36 @@ class Aria2Client:
         try:
             await self.call("aria2.forceRemove", [gid])
         except Aria2Error as exc:
-            if "not found" not in str(exc).lower():
+            if not self._is_gone_error(exc):
                 raise
         try:
-            await self.call("aria2.removeDownloadResult", [gid])
+            return await self.remove_download_result(gid)
         except Aria2Error:
-            pass
+            raise
+
+    async def remove_download_result(self, gid: str) -> Any:
+        """Remove a stopped result without requiring it to be active."""
+        try:
+            return await self.call("aria2.removeDownloadResult", [gid])
+        except Aria2Error as exc:
+            # Completion and metadata hand-off can race aria2's own result
+            # bookkeeping. Treat an already-gone GID as success so cleanup is
+            # idempotent, while surfacing other RPC failures.
+            if self._is_gone_error(exc):
+                return None
+            raise
+
+    @staticmethod
+    def _is_gone_error(exc: Aria2Error) -> bool:
+        message = str(exc).lower()
+        return any(
+            marker in message
+            for marker in (
+                "not found",
+                "not exist",
+                "no such",
+                "already removed",
+                "download not found",
+            )
+        )
 

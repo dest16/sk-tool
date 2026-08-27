@@ -194,14 +194,50 @@ class DownloadManager:
             elif state == "paused":
                 updates["status"] = "paused"
             elif state == "complete":
+                followed_by = status.get("followedBy") or []
+                next_gid = next((str(gid) for gid in followed_by if gid and str(gid) != task.gid), None)
+                if next_gid:
+                    # A magnet URI is represented by a metadata download first;
+                    # aria2 then creates the real torrent download with a new
+                    # GID. Follow that child instead of treating metadata as
+                    # the completed resource.
+                    previous_gid = task.gid
+                    await self._update(
+                        task.id,
+                        gid=next_gid,
+                        status="waiting",
+                        total_bytes=0,
+                        completed_bytes=0,
+                        download_speed=0,
+                        eta_seconds=None,
+                        error=None,
+                    )
+                    await self._remove_result_quietly(previous_gid)
+                    continue
                 updates.update({"status": "completed_pending_move", "completed_at": utc_now(), "download_speed": 0})
-                await self.aria2.remove(task.gid)
+                updated = await self._update(task.id, **updates)
+                await self._remove_result_quietly(task.gid)
+                if updated and updated.status == "completed_pending_move" and updated.auto_move:
+                    await self.move(updated)
+                    await self._save(updated)
+                continue
             elif state in {"error", "removed"}:
                 updates["status"] = "failed" if state == "error" else "cancelled"
             updated = await self._update(task.id, **updates)
             if updated and updated.status == "completed_pending_move" and updated.auto_move:
                 await self.move(updated)
                 await self._save(updated)
+
+    async def _remove_result_quietly(self, gid: str | None) -> None:
+        if not gid:
+            return
+        try:
+            await self.aria2.remove_download_result(gid)
+        except Aria2Error as exc:
+            # A completed metadata/result GID can disappear while aria2 is
+            # creating its child download. It is safe to continue because the
+            # payload is already complete and no longer needs to seed.
+            logger.warning("清理 aria2 已完成任务 %s 失败，将继续处理：%s", gid, exc)
 
     async def _update(self, task_id: str, **updates) -> DownloadTask | None:
         async with self.session_factory() as session:
