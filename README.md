@@ -29,7 +29,7 @@ docker compose logs -f sukebei-manager
 
 aria2 已启用 DHT、PEX 和 UPnP/NAT-PMP。若宿主机端口被占用，可在 `.env` 中修改 `ARIA2_P2P_PORT`，然后重新创建容器。Docker 映射端口和 aria2 监听端口会保持一致；RPC 端口仍只监听容器内回环地址，不对外暴露。
 
-如果 NAS 使用其它 UID/GID，可在启动前设置 `PUID` 和 `PGID`。挂载目录必须已经允许该用户读写。
+Unraid 默认的 `nobody:users` 对应 UID/GID 通常为 `99:100`，镜像和 Compose 示例也采用这个默认值；其它 NAS 或普通 Linux 主机请在启动前设置匹配宿主机目录的 `PUID` 和 `PGID`。入口脚本会在 Docker 首次自动创建的空挂载目录上修正顶层属主，然后以该 UID/GID 降权运行；已有目录和文件不会被递归改权限。如果已有目录不可写，请在宿主机为对应 UID/GID 配置 ACL 或属主。
 
 ## 开发
 
