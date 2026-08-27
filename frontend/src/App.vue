@@ -108,7 +108,8 @@ async function taskAction(task: Download, action: string) {
 async function sendTaskAction(task: Download, action: string, body: Record<string, unknown> = {}) {
   try {
     const data = await api(`/api/downloads/${task.id}/${action}`, { method: "POST", body: JSON.stringify(body) });
-    if (action === "cancel") {
+    const deletionFailed = action === "cancel" && body.delete_files === true && Boolean(data.task?.error);
+    if (action === "cancel" && !deletionFailed) {
       // The backend removes the row as part of a successful cancellation;
       // remove it locally immediately instead of briefly rendering the
       // acknowledgement object returned by the action endpoint.
@@ -118,10 +119,10 @@ async function sendTaskAction(task: Download, action: string, body: Record<strin
       if (index >= 0 && data.task) downloads.value[index] = data.task;
     }
     await refreshDownloads();
-    return true;
+    return data.task || null;
   } catch (err) {
     error.value = (err as Error).message;
-    return false;
+    return null;
   }
 }
 async function confirmCancel() {
@@ -129,9 +130,10 @@ async function confirmCancel() {
   if (!task) return;
   const deleteFiles = deleteFilesOnCancel.value;
   pendingCancelTask.value = null;
-  if (await sendTaskAction(task, "cancel", { delete_files: deleteFiles })) {
-    notice.value = deleteFiles ? "任务和暂存文件已删除" : "任务已删除，暂存文件已保留";
-  }
+  const result = await sendTaskAction(task, "cancel", { delete_files: deleteFiles });
+  if (!result) return;
+  if (deleteFiles && result.error) { error.value = result.error; return; }
+  notice.value = deleteFiles ? "任务和暂存文件已删除" : "任务已删除，暂存文件已保留";
 }
 async function deleteHistory(task: Download) {
   if (!window.confirm("确认删除这条历史记录吗？已整理的文件不会被删除。")) return;
