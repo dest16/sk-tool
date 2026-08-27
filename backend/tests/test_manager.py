@@ -54,6 +54,42 @@ class _Aria2:
             raise self.remove_error
 
 
+class _ActionSession:
+    def __init__(self, task):
+        self.task = task
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, model, task_id):
+        return self.task if task_id == self.task.id else None
+
+    async def commit(self):
+        return None
+
+    async def refresh(self, task):
+        return None
+
+
+class _ActionSessionFactory:
+    def __init__(self, task):
+        self.task = task
+
+    def __call__(self):
+        return _ActionSession(self.task)
+
+
+class _ActionAria2:
+    def __init__(self):
+        self.removed = []
+
+    async def remove(self, gid):
+        self.removed.append(gid)
+
+
 def _task(tmp_path: Path, gid: str = "metadata-gid") -> DownloadTask:
     return DownloadTask(
         id="task-id",
@@ -138,4 +174,35 @@ async def test_completed_download_is_saved_even_if_result_cleanup_returns_400(tm
     assert task.status == "completed_pending_move"
     assert task.completed_bytes == 100
     assert aria2.removed == ["torrent-gid"]
+
+
+async def test_cancel_deletes_staging_files_by_default(tmp_path: Path):
+    task = _task(tmp_path, gid="active-gid")
+    staging = Path(task.staging_dir)
+    staging.mkdir(parents=True)
+    (staging / "partial.bin").write_bytes(b"partial")
+    settings = type("Settings", (), {"download_dir": tmp_path, "library_dir": tmp_path / "library"})()
+    aria2 = _ActionAria2()
+    manager = DownloadManager(settings, _ActionSessionFactory(task), aria2)
+
+    result = await manager.action(task.id, "cancel")
+
+    assert result.status == "cancelled"
+    assert aria2.removed == ["active-gid"]
+    assert not staging.exists()
+
+
+async def test_cancel_can_keep_staging_files_when_explicitly_requested(tmp_path: Path):
+    task = _task(tmp_path, gid="active-gid")
+    staging = Path(task.staging_dir)
+    staging.mkdir(parents=True)
+    (staging / "partial.bin").write_bytes(b"partial")
+    settings = type("Settings", (), {"download_dir": tmp_path, "library_dir": tmp_path / "library"})()
+    manager = DownloadManager(settings, _ActionSessionFactory(task), _ActionAria2())
+
+    result = await manager.action(task.id, "cancel", delete_files=False)
+
+    assert result.status == "cancelled"
+    assert staging.exists()
+    assert result.error == "任务已删除，暂存文件已保留"
 

@@ -21,6 +21,7 @@ from .models import DownloadTask, Session, Setting, User
 from .schemas import (
     ActionResponse,
     DownloadCreateRequest,
+    DownloadActionRequest,
     DownloadListResponse,
     DownloadResponse,
     LoginRequest,
@@ -253,7 +254,7 @@ async def search(
 
 @app.get("/api/meta")
 async def meta(context=Depends(require_user)):
-    return {"categories": CATEGORY_OPTIONS, "sorts": SORT_OPTIONS, "statuses": {"waiting": "排队中", "metadata": "获取元数据", "downloading": "下载中", "paused": "已暂停", "completed_pending_move": "完成待整理", "moving": "整理中", "moved": "已整理", "conflict": "名称冲突", "filtered": "无文件符合过滤条件", "failed": "失败", "cancelled": "已取消"}}
+    return {"categories": CATEGORY_OPTIONS, "sorts": SORT_OPTIONS, "statuses": {"waiting": "排队中", "metadata": "获取元数据", "downloading": "下载中", "paused": "已暂停", "completed_pending_move": "完成待整理", "moving": "整理中", "moved": "已整理", "conflict": "名称冲突", "filtered": "无文件符合过滤条件", "failed": "失败", "cancelled": "已删除"}}
 
 
 @app.get("/api/downloads", response_model=DownloadListResponse)
@@ -287,11 +288,11 @@ async def create_download(payload: DownloadCreateRequest, context=Depends(requir
 
 
 @app.post("/api/downloads/{task_id}/{action}", response_model=ActionResponse)
-async def download_action(task_id: str, action: str, context=Depends(require_write)):
+async def download_action(task_id: str, action: str, payload: DownloadActionRequest | None = None, context=Depends(require_write)):
     if action not in {"pause", "resume", "cancel", "retry", "move", "cleanup"}:
         raise HTTPException(status_code=404, detail="不支持的操作")
     try:
-        task = await manager.action(task_id, action)
+        task = await manager.action(task_id, action, delete_files=payload.delete_files if payload else True)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (ValueError, Aria2Error, OSError) as exc:

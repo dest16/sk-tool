@@ -67,7 +67,7 @@ class DownloadManager:
         async with self.session_factory() as session:
             return await session.get(DownloadTask, task_id)
 
-    async def action(self, task_id: str, action: str) -> DownloadTask:
+    async def action(self, task_id: str, action: str, *, delete_files: bool = True) -> DownloadTask:
         task = await self.get(task_id)
         if not task:
             raise KeyError("任务不存在")
@@ -78,9 +78,15 @@ class DownloadManager:
             await self.aria2.resume(task.gid)
             task.status = "waiting"
         elif action == "cancel":
-            if task.gid and task.status not in {"completed_pending_move", "moving", "conflict", "filtered"}:
+            if task.status == "moving":
+                raise ValueError("整理进行中，暂时不能删除任务")
+            if task.gid and task.status not in {"completed_pending_move", "conflict", "filtered"}:
                 await self.aria2.remove(task.gid)
             task.status = "cancelled"
+            if delete_files:
+                task.error = await self._delete_staging(task.staging_dir)
+            else:
+                task.error = "任务已删除，暂存文件已保留"
         elif action == "retry":
             if task.status not in {"failed", "cancelled"}:
                 raise ValueError("只有失败或已取消的任务可以重试")
@@ -92,12 +98,9 @@ class DownloadManager:
         elif action == "cleanup":
             if task.status not in {"failed", "cancelled", "filtered"}:
                 raise ValueError("只有失败、已取消或被过滤的任务可以清理暂存文件")
-            staging = Path(task.staging_dir)
-            root = self.settings.download_dir.resolve()
-            if staging.is_symlink() or staging.resolve() == root or not staging.resolve().is_relative_to(root):
-                raise ValueError("暂存目录不在允许范围内")
-            if staging.exists():
-                await asyncio.to_thread(shutil.rmtree, staging)
+            cleanup_error = await self._delete_staging(task.staging_dir)
+            if cleanup_error:
+                raise OSError(cleanup_error)
             task.error = "暂存文件已清理"
         elif action == "move":
             await self.move(task)
@@ -175,6 +178,24 @@ class DownloadManager:
                 raise InvalidFilterError(f"{key} 不是有效的整数") from exc
             sizes.append(parsed)
         return filename_regex, sizes[0], sizes[1]
+
+    async def _delete_staging(self, staging_dir: str) -> str | None:
+        """Delete one task staging directory after validating its boundary."""
+        staging = Path(staging_dir)
+        root = self.settings.download_dir.resolve()
+        try:
+            if staging.is_symlink():
+                return "暂存目录不允许是符号链接"
+            resolved = staging.resolve()
+            if resolved == root or not resolved.is_relative_to(root):
+                return "暂存目录不在允许范围内"
+            if resolved.exists() and not resolved.is_dir():
+                return "暂存路径不是目录"
+            if resolved.exists():
+                await asyncio.to_thread(shutil.rmtree, resolved)
+        except OSError as exc:
+            return f"暂存文件删除失败：{exc}"
+        return None
 
     async def poll_loop(self) -> None:
         while True:

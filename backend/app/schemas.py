@@ -42,6 +42,12 @@ class DownloadCreateRequest(BaseModel):
     auto_move: bool = False
 
 
+class DownloadActionRequest(BaseModel):
+    # Destructive cancellation removes the task's staging directory by
+    # default; clients can explicitly opt to retain it.
+    delete_files: bool = True
+
+
 class ProxySettings(BaseModel):
     indexer_proxy: str | None = None
     aria2_proxy: str | None = None
