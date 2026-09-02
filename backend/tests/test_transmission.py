@@ -55,6 +55,7 @@ async def test_transmission_status_is_normalised_for_manager(tmp_path: Path):
                     "error": 0,
                     "errorString": "",
                     "downloadDir": str(tmp_path / "downloads" / "task"),
+                    "name": "video.mkv",
                     "files": [{"name": "video.mkv", "length": 100, "bytesCompleted": 50}],
                 }
             ]
@@ -66,13 +67,14 @@ async def test_transmission_status_is_normalised_for_manager(tmp_path: Path):
     assert seen["method"] == "torrent-get"
     assert seen["arguments"] == {"ids": ["a" * 40], "fields": [
         "id", "hashString", "status", "totalSize", "percentDone", "rateDownload",
-        "error", "errorString", "downloadDir", "files", "metadataPercentComplete",
+        "error", "errorString", "downloadDir", "name", "files", "metadataPercentComplete",
     ]}
     assert result["status"] == "active"
     assert result["totalLength"] == "100"
     assert result["completedLength"] == "50"
     assert result["downloadSpeed"] == "20"
     assert result["files"][0]["path"].endswith("task/video.mkv")
+    assert result["contentPath"].endswith("task/video.mkv")
 
 
 async def test_transmission_add_magnet_returns_stable_hash(tmp_path: Path):
