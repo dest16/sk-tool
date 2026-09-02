@@ -76,12 +76,12 @@ async function loadFilters() { const data = await api("/api/settings/filters"); 
 async function doSetup() {
   error.value = "";
   try { const data = await api("/api/setup", { method: "POST", body: JSON.stringify({ setup_token: setup.token, username: setup.username, password: setup.password }) });
-    loggedIn.value = true; setupRequired.value = false; username.value = data.username; csrf.value = data.csrf_token; await loadMeta(); await loadFilters(); notice.value = "初始化成功";
+    loggedIn.value = true; setupRequired.value = false; username.value = data.username; csrf.value = data.csrf_token; await loadMeta(); await loadFilters(); await refreshDownloads(); startPolling(); notice.value = "初始化成功";
   } catch (err) { error.value = (err as Error).message; }
 }
 async function doLogin() {
   error.value = "";
-  try { const data = await api("/api/auth/login", { method: "POST", body: JSON.stringify(login) }); loggedIn.value = true; username.value = data.username; csrf.value = data.csrf_token; await loadMeta(); await refreshDownloads(); await loadProxy(); await loadFilters(); }
+  try { const data = await api("/api/auth/login", { method: "POST", body: JSON.stringify(login) }); loggedIn.value = true; username.value = data.username; csrf.value = data.csrf_token; await loadMeta(); await refreshDownloads(); await loadProxy(); await loadFilters(); startPolling(); }
   catch (err) { error.value = (err as Error).message; }
 }
 async function doLogout() { try { await api("/api/auth/logout", { method: "POST" }); } finally { loggedIn.value = false; csrf.value = ""; stopPolling(); } }
