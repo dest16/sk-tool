@@ -40,13 +40,11 @@ class DownloadManager:
 
     async def create(self, title: str, magnet_uri: str, source_url: str | None, auto_move: bool) -> DownloadTask:
         task_id = str(uuid.uuid4())
-        staging = self.settings.download_dir / task_id
-        staging.mkdir(parents=True, exist_ok=False)
-        try:
-            gid = await self.downloader.add_magnet(magnet_uri, staging)
-        except Exception:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
+        # Transmission writes torrent content directly into the download root.
+        # Keep a non-existent private placeholder until metadata reveals the
+        # actual file or directory to associate with this task.
+        staging = self.settings.download_dir / f".sukebei-pending-{task_id}"
+        gid = await self.downloader.add_magnet(magnet_uri, self.settings.download_dir)
         task = DownloadTask(
             id=task_id,
             gid=gid,
@@ -72,6 +70,15 @@ class DownloadManager:
         if not task:
             raise KeyError("任务不存在")
         cancel_delete_error: str | None = None
+        cleanup_path = task.staging_dir
+        if action == "cancel" and task.gid:
+            try:
+                status = await self.downloader.status(task.gid)
+                content_path = self._safe_download_path(status.get("contentPath"))
+                if content_path:
+                    cleanup_path = str(content_path)
+            except TransmissionError:
+                pass
         if action == "pause" and task.gid:
             await self.downloader.pause(task.gid)
             task.status = "paused"
@@ -81,20 +88,20 @@ class DownloadManager:
         elif action == "cancel":
             if task.status == "moving":
                 raise ValueError("整理进行中，暂时不能删除任务")
-            if task.gid and task.status not in {"completed_pending_move", "conflict", "filtered"}:
+            if task.gid and task.status not in {"completed_pending_move", "conflict", "filtered", "moved"}:
                 await self.downloader.remove(task.gid)
             task.status = "cancelled"
             if delete_files:
-                cancel_delete_error = await self._delete_staging(task.staging_dir)
+                cancel_delete_error = await self._delete_staging(cleanup_path)
                 task.error = cancel_delete_error
             else:
                 task.error = "任务已删除，暂存文件已保留"
         elif action == "retry":
             if task.status not in {"failed", "cancelled"}:
                 raise ValueError("只有失败或已取消的任务可以重试")
-            staging = Path(task.staging_dir)
-            staging.mkdir(parents=True, exist_ok=True)
-            task.gid = await self.downloader.add_magnet(task.magnet_uri, staging)
+            staging = self.settings.download_dir / f".sukebei-pending-{task.id}"
+            task.staging_dir = str(staging)
+            task.gid = await self.downloader.add_magnet(task.magnet_uri, self.settings.download_dir)
             task.status = "waiting"
             task.error = None
         elif action == "cleanup":
@@ -194,7 +201,7 @@ class DownloadManager:
         return filename_regex, sizes[0], sizes[1]
 
     async def _delete_staging(self, staging_dir: str) -> str | None:
-        """Delete one task staging directory after validating its boundary."""
+        """Delete one task's file or directory after validating its boundary."""
         staging = Path(staging_dir)
         root = self.settings.download_dir.resolve()
         try:
@@ -203,10 +210,13 @@ class DownloadManager:
             resolved = staging.resolve()
             if resolved == root or not resolved.is_relative_to(root):
                 return "暂存目录不在允许范围内"
-            if resolved.exists() and not resolved.is_dir():
-                return "暂存路径不是目录"
             if resolved.exists():
-                await asyncio.to_thread(shutil.rmtree, resolved)
+                if resolved.is_dir():
+                    await asyncio.to_thread(shutil.rmtree, resolved)
+                elif resolved.is_file():
+                    await asyncio.to_thread(resolved.unlink)
+                else:
+                    return "暂存路径不是普通文件或目录"
         except OSError as exc:
             return f"暂存文件删除失败：{exc}"
         return None
@@ -256,6 +266,9 @@ class DownloadManager:
                 "download_speed": float(status.get("downloadSpeed") or 0),
                 "error": status.get("errorMessage") or None,
             }
+            content_path = self._safe_download_path(status.get("contentPath"))
+            if content_path and status.get("files"):
+                updates["staging_dir"] = str(content_path)
             if metadata_only:
                 # A downloader may expose temporary metadata as a regular file.
                 # Its size is not the size of the requested payload.
@@ -324,6 +337,21 @@ class DownloadManager:
             await session.commit()
             await session.refresh(task)
             return task
+
+    def _safe_download_path(self, value: object) -> Path | None:
+        if not value:
+            return None
+        candidate = Path(str(value))
+        root = self.settings.download_dir.resolve()
+        try:
+            if candidate.is_symlink():
+                return None
+            resolved = candidate.resolve()
+        except OSError:
+            return None
+        if resolved == root or not resolved.is_relative_to(root):
+            return None
+        return resolved
 
     async def _save(self, task: DownloadTask) -> None:
         await self._update(task.id, **{k: v for k, v in task.__dict__.items() if k not in {"_sa_instance_state", "id"}})
