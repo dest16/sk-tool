@@ -91,6 +91,9 @@ class _ActionAria2:
     def __init__(self):
         self.removed = []
 
+    async def status(self, gid):
+        return {}
+
     async def remove(self, gid):
         self.removed.append(gid)
 
@@ -215,3 +218,14 @@ async def test_cancel_can_keep_staging_files_when_explicitly_requested(tmp_path:
     assert result.error == "任务已删除，暂存文件已保留"
     assert session_factory.deleted == [task.id]
 
+
+
+
+async def test_delete_staging_accepts_a_single_file(tmp_path: Path):
+    file_path = tmp_path / "video.mkv"
+    file_path.write_bytes(b"partial")
+    settings = type("Settings", (), {"download_dir": tmp_path, "library_dir": tmp_path / "library"})()
+    manager = DownloadManager(settings, _SessionFactory(_task(tmp_path)), _ActionAria2())
+
+    assert await manager._delete_staging(str(file_path)) is None
+    assert not file_path.exists()
