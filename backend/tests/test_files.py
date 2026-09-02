@@ -21,6 +21,17 @@ def test_move_single_file(tmp_path: Path):
     assert not staging.exists()
 
 
+def test_move_direct_download_file(tmp_path: Path):
+    staging = tmp_path / "downloads" / "clip.txt"
+    library = tmp_path / "library"
+    staging.parent.mkdir(parents=True)
+    staging.write_text("ok")
+
+    assert move_download(staging, library, "title", "job", tmp_path / "downloads") == "clip.txt"
+    assert (library / "clip.txt").read_text() == "ok"
+    assert not staging.exists()
+
+
 def test_move_multiple_files_uses_title_folder(tmp_path: Path):
     staging = tmp_path / "downloads" / "job"
     library = tmp_path / "library"
