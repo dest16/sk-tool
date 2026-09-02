@@ -24,8 +24,9 @@ class Settings(BaseSettings):
     aria2_rpc_port: int = 6800
     # BitTorrent/DHT listen port, exposed by Docker over TCP and UDP.
     aria2_p2p_port: int = Field(default=51413, ge=1024, le=65535)
-    aria2_binary: str = "aria2c"
-    aria2_rpc_secret_file: Path | None = None
+    transmission_binary: str = "transmission-daemon"
+    transmission_rpc_host: str = "127.0.0.1"
+    transmission_rpc_port: int = 9091
 
     @property
     def db_url(self) -> str:
@@ -43,4 +44,5 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
+
 

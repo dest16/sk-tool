@@ -4,25 +4,25 @@ services:
     image: sukebei-manager:latest
     container_name: sukebei-manager
     restart: unless-stopped
-    ports:
-      - "8080:8080"
-      # aria2 BitTorrent/DHT inbound traffic (UPnP may also map this port).
-      - "${ARIA2_P2P_PORT:-51413}:${ARIA2_P2P_PORT:-51413}/tcp"
-      - "${ARIA2_P2P_PORT:-51413}:${ARIA2_P2P_PORT:-51413}/udp"
+    # Host networking is required for Transmission to discover the LAN IGD
+    # and request a mapping for the host's actual LAN address.
+    network_mode: host
     environment:
       PUID: ${PUID:-99}
       PGID: ${PGID:-100}
       TZ: ${TZ:-Asia/Shanghai}
       SUKEBEI_COOKIE_SECURE: ${COOKIE_SECURE:-false}
       SUKEBEI_ARIA2_P2P_PORT: ${ARIA2_P2P_PORT:-51413}
+      SUKEBEI_PORT: ${WEB_PORT:-8080}
     volumes:
       - ./data/config:/config
       - ./data/downloads:/downloads
       - ./data/library:/library
     healthcheck:
-      test: ["CMD-SHELL", "gosu \"$${PUID:-99}:$${PGID:-100}\" python -c \"import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)); raise SystemExit(0 if data.get('ok') and data.get('aria2') else 1)\""]
+      test: ["CMD-SHELL", "gosu \"$${PUID:-99}:$${PGID:-100}\" python -c \"import json, os, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('SUKEBEI_PORT', '8080') + '/api/health', timeout=3)); raise SystemExit(0 if data.get('ok') and data.get('downloader') else 1)\""]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
+
 

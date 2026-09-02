@@ -12,7 +12,6 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .aria2 import Aria2Client, Aria2Error, is_metadata_file
 from .config import get_settings
 from .db import Base, create_database
 from .indexer import CATEGORY_OPTIONS, SORT_OPTIONS, IndexerError, SearchService, SukebeiAdapter
@@ -32,6 +31,7 @@ from .schemas import (
     SyncFilterSettings,
 )
 from .security import hash_password, new_token, session_for, token_hash, verify_password
+from .transmission import TransmissionClient, TransmissionError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -80,8 +80,8 @@ def task_response(task: DownloadTask, aria_files: list[dict] | None = None) -> D
 
 settings = get_settings()
 engine, session_factory = create_database(settings)
-aria2 = Aria2Client(settings)
-manager = DownloadManager(settings, session_factory, aria2)
+downloader = TransmissionClient(settings)
+manager = DownloadManager(settings, session_factory, downloader)
 search_service = SearchService(lambda proxy: SukebeiAdapter(settings.indexer_base_url, settings.request_timeout_seconds, proxy), settings.search_cache_seconds)
 login_attempts: dict[str, list[float]] = defaultdict(list)
 
@@ -104,12 +104,12 @@ async def lifespan(app: FastAPI):
     await ensure_setup_token()
     async with session_factory() as session:
         aria_proxy = await session.get(Setting, "aria2_proxy")
-        aria2.proxy = aria_proxy.value if aria_proxy and aria_proxy.value else None
+        downloader.proxy = aria_proxy.value if aria_proxy and aria_proxy.value else None
     try:
         await manager.start()
     except Exception:
-        logger.exception("aria2 启动失败，Web 服务仍可用于配置检查")
-        # Keep the web process alive and let the manager retry aria2 in the
+        logger.exception("Transmission 启动失败，Web 服务仍可用于配置检查")
+        # Keep the web process alive and let the manager retry Transmission in the
         # background (for example while a mounted binary or port becomes ready).
         manager._poll_task = asyncio.create_task(manager.poll_loop())
     yield
@@ -163,13 +163,21 @@ async def health():
             await session.scalar(select(func.count(User.id)))
     except Exception:
         database_ok = False
-    aria_ok = False
+    downloader_ok = False
     try:
-        await aria2.call("aria2.getVersion", [])
-        aria_ok = True
+        await downloader.version()
+        downloader_ok = True
     except Exception:
         pass
-    return {"ok": database_ok, "database": database_ok, "aria2": aria_ok, "downloads": settings.download_dir.exists(), "library": settings.library_dir.exists()}
+    return {
+        "ok": database_ok,
+        "database": database_ok,
+        "downloader": downloader_ok,
+        # Keep the old health key for existing Docker healthchecks and clients.
+        "aria2": downloader_ok,
+        "downloads": settings.download_dir.exists(),
+        "library": settings.library_dir.exists(),
+    }
 
 
 @app.get("/api/setup/status")
@@ -258,7 +266,7 @@ async def meta(context=Depends(require_user)):
 
 
 @app.get("/api/downloads", response_model=DownloadListResponse)
-async def downloads(context=Depends(require_user), aria: Aria2Client = Depends(lambda: aria2)):
+async def downloads(context=Depends(require_user), downloader_client: TransmissionClient = Depends(lambda: downloader)):
     async with session_factory() as session:
         rows = await session.execute(select(DownloadTask).order_by(DownloadTask.created_at.desc()))
         tasks = list(rows.scalars())
@@ -267,7 +275,7 @@ async def downloads(context=Depends(require_user), aria: Aria2Client = Depends(l
         files = None
         if task.gid and task.status in {"waiting", "metadata", "downloading", "paused"}:
             try:
-                files = (await aria.status(task.gid)).get("files")
+                files = (await downloader_client.status(task.gid)).get("files")
             except Exception:
                 pass
         items.append(task_response(task, files))
@@ -282,7 +290,7 @@ async def create_download(payload: DownloadCreateRequest, context=Depends(requir
         raise HTTPException(status_code=422, detail="只接受合法的 BTIH magnet 链接")
     try:
         task = await manager.create(payload.title, payload.magnet_uri, payload.source_url, payload.auto_move)
-    except (Aria2Error, OSError) as exc:
+    except (TransmissionError, OSError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return task_response(task)
 
@@ -295,7 +303,7 @@ async def download_action(task_id: str, action: str, payload: DownloadActionRequ
         task = await manager.action(task_id, action, delete_files=payload.delete_files if payload else True)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except (ValueError, Aria2Error, OSError) as exc:
+    except (ValueError, TransmissionError, OSError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return ActionResponse(task=task_response(task))
 
@@ -336,16 +344,16 @@ async def put_proxy(payload: ProxySettings, context=Depends(require_write), sess
         else:
             session.add(Setting(key=key, value=value or ""))
     await session.commit()
-    # aria2 proxy is applied on restart; clear the cached search adapter immediately.
+    # The download proxy is applied on restart; clear the cached search adapter immediately.
     search_service.cache.clear()
     aria_changed = "aria2_proxy" in payload.model_fields_set
     if aria_changed and previous_aria_proxy != payload.aria2_proxy:
-        aria2.proxy = payload.aria2_proxy
+        downloader.proxy = payload.aria2_proxy
         try:
-            await aria2.stop()
-            await aria2.start()
+            await downloader.stop()
+            await downloader.start()
         except Exception:
-            logger.exception("应用 aria2 代理设置失败")
+            logger.exception("应用 Transmission 代理设置失败")
     values = {}
     for key in ("indexer_proxy", "aria2_proxy"):
         setting = await session.get(Setting, key)
@@ -409,4 +417,5 @@ async def spa(path: str):
     if index.exists():
         return FileResponse(index)
     return JSONResponse({"detail": "前端尚未构建，请运行 npm run build"}, status_code=404)
+
 

@@ -11,6 +11,12 @@ case "$target_gid" in
   ''|*[!0-9]*) echo "PGID 必须是数字：$target_gid" >&2; exit 64 ;;
 esac
 
+# Let the same image run on bridge or host networking without hard-coding the
+# web port into the container command. Compose and Unraid can set SUKEBEI_PORT.
+if [ "${1:-}" = "uvicorn" ] && [ -n "${SUKEBEI_PORT:-}" ]; then
+  set -- "$@" --port "$SUKEBEI_PORT"
+fi
+
 if [ "$(id -u)" -eq 0 ]; then
   # Docker creates bind-mount source directories as root when they do not
   # exist. Only repair an empty directory; never recursively change ownership
@@ -34,4 +40,5 @@ fi
 # An explicit docker --user override remains supported, but cannot repair a
 # root-owned bind mount because this process is intentionally not privileged.
 exec "$@"
+
 

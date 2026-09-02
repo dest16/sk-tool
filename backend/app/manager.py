@@ -6,9 +6,9 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from .aria2 import Aria2Client, Aria2Error, is_metadata_file
 from .files import InvalidFilterError, MoveConflictError, NoMatchingFilesError, UnsafePathError, move_download
 from .models import DownloadTask, Setting, utc_now
+from .transmission import TransmissionClient, TransmissionError, is_metadata_file
 
 logger = logging.getLogger(__name__)
 
@@ -16,17 +16,17 @@ TERMINAL = {"moved", "failed", "cancelled", "conflict", "filtered"}
 
 
 class DownloadManager:
-    def __init__(self, settings, session_factory, aria2: Aria2Client):
+    def __init__(self, settings, session_factory, downloader: TransmissionClient):
         self.settings = settings
         self.session_factory = session_factory
-        self.aria2 = aria2
+        self.downloader = downloader
         self._poll_task: asyncio.Task | None = None
         self._move_locks: dict[str, asyncio.Lock] = {}
 
     async def start(self) -> None:
         self.settings.download_dir.mkdir(parents=True, exist_ok=True)
         self.settings.library_dir.mkdir(parents=True, exist_ok=True)
-        await self.aria2.start()
+        await self.downloader.start()
         self._poll_task = asyncio.create_task(self.poll_loop())
 
     async def stop(self) -> None:
@@ -36,14 +36,14 @@ class DownloadManager:
                 await self._poll_task
             except asyncio.CancelledError:
                 pass
-        await self.aria2.stop()
+        await self.downloader.stop()
 
     async def create(self, title: str, magnet_uri: str, source_url: str | None, auto_move: bool) -> DownloadTask:
         task_id = str(uuid.uuid4())
         staging = self.settings.download_dir / task_id
         staging.mkdir(parents=True, exist_ok=False)
         try:
-            gid = await self.aria2.add_magnet(magnet_uri, staging)
+            gid = await self.downloader.add_magnet(magnet_uri, staging)
         except Exception:
             shutil.rmtree(staging, ignore_errors=True)
             raise
@@ -73,16 +73,16 @@ class DownloadManager:
             raise KeyError("任务不存在")
         cancel_delete_error: str | None = None
         if action == "pause" and task.gid:
-            await self.aria2.pause(task.gid)
+            await self.downloader.pause(task.gid)
             task.status = "paused"
         elif action == "resume" and task.gid:
-            await self.aria2.resume(task.gid)
+            await self.downloader.resume(task.gid)
             task.status = "waiting"
         elif action == "cancel":
             if task.status == "moving":
                 raise ValueError("整理进行中，暂时不能删除任务")
             if task.gid and task.status not in {"completed_pending_move", "conflict", "filtered"}:
-                await self.aria2.remove(task.gid)
+                await self.downloader.remove(task.gid)
             task.status = "cancelled"
             if delete_files:
                 cancel_delete_error = await self._delete_staging(task.staging_dir)
@@ -94,7 +94,7 @@ class DownloadManager:
                 raise ValueError("只有失败或已取消的任务可以重试")
             staging = Path(task.staging_dir)
             staging.mkdir(parents=True, exist_ok=True)
-            task.gid = await self.aria2.add_magnet(task.magnet_uri, staging)
+            task.gid = await self.downloader.add_magnet(task.magnet_uri, staging)
             task.status = "waiting"
             task.error = None
         elif action == "cleanup":
@@ -113,7 +113,7 @@ class DownloadManager:
             if db_task:
                 if action == "cancel" and cancel_delete_error is None:
                     # Cancellation is a destructive delete operation: once
-                    # aria2 is stopped and the optional staging cleanup has
+                    # The downloader is stopped and the optional staging cleanup has
                     # succeeded, remove the task row as well so it no longer
                     # appears in the task list.  The detached object is still
                     # returned to the API caller for a final acknowledgement.
@@ -211,11 +211,11 @@ class DownloadManager:
     async def poll_loop(self) -> None:
         while True:
             try:
-                if not self.aria2.process or self.aria2.process.returncode is not None:
+                if not self.downloader.process or self.downloader.process.returncode is not None:
                     try:
-                        await self.aria2.start()
+                        await self.downloader.start()
                     except Exception:
-                        logger.exception("aria2 尚未就绪，稍后重试")
+                        logger.exception("Transmission 尚未就绪，稍后重试")
                 await self.poll_once()
             except asyncio.CancelledError:
                 raise
@@ -239,8 +239,8 @@ class DownloadManager:
                     await self._save(task)
                 continue
             try:
-                status = await self.aria2.status(task.gid)
-            except Aria2Error as exc:
+                status = await self.downloader.status(task.gid)
+            except TransmissionError as exc:
                 if task.status not in {"paused", "cancelled"}:
                     await self._update(task.id, error=str(exc))
                 continue
@@ -254,8 +254,8 @@ class DownloadManager:
                 "error": status.get("errorMessage") or None,
             }
             if metadata_only:
-                # aria2 exposes the temporary .torrent metadata as a regular
-                # file. Its size is not the size of the requested payload.
+                # A downloader may expose temporary metadata as a regular file.
+                # Its size is not the size of the requested payload.
                 updates.update(total_bytes=0, completed_bytes=0, download_speed=0, eta_seconds=None)
             remaining = updates["total_bytes"] - updates["completed_bytes"]
             updates["eta_seconds"] = int(remaining / updates["download_speed"]) if remaining > 0 and updates["download_speed"] > 0 else None
@@ -270,9 +270,8 @@ class DownloadManager:
                 next_gid = next((str(gid) for gid in followed_by if gid and str(gid) != task.gid), None)
                 if next_gid:
                     # A magnet URI is represented by a metadata download first;
-                    # aria2 then creates the real torrent download with a new
-                    # GID. Follow that child instead of treating metadata as
-                    # the completed resource.
+                    # Keep compatibility with adapters that represent magnet
+                    # metadata and payload as two linked tasks.
                     previous_gid = task.gid
                     await self._update(
                         task.id,
@@ -304,12 +303,12 @@ class DownloadManager:
         if not gid:
             return
         try:
-            await self.aria2.remove_download_result(gid)
-        except Aria2Error as exc:
-            # A completed metadata/result GID can disappear while aria2 is
-            # creating its child download. It is safe to continue because the
+            await self.downloader.remove_download_result(gid)
+        except TransmissionError as exc:
+            # A completed metadata/result identifier can disappear while the
+            # downloader is creating its child download. It is safe to continue because the
             # payload is already complete and no longer needs to seed.
-            logger.warning("清理 aria2 已完成任务 %s 失败，将继续处理：%s", gid, exc)
+            logger.warning("清理已完成下载任务 %s 失败，将继续处理：%s", gid, exc)
 
     async def _update(self, task_id: str, **updates) -> DownloadTask | None:
         async with self.session_factory() as session:
@@ -325,4 +324,5 @@ class DownloadManager:
 
     async def _save(self, task: DownloadTask) -> None:
         await self._update(task.id, **{k: v for k, v in task.__dict__.items() if k not in {"_sa_instance_state", "id"}})
+
 

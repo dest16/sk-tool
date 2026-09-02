@@ -11,7 +11,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends aria2 gosu tini \
+    && apt-get install -y --no-install-recommends transmission-daemon gosu tini \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY backend/requirements.txt ./backend/requirements.txt
@@ -24,10 +24,12 @@ RUN mkdir -p /config /downloads /library \
     && chown -R appuser:appuser /app /config /downloads /library \
     && chmod 0755 /usr/local/bin/docker-entrypoint.sh
 ENV PUID=99 \
-    PGID=100
+    PGID=100 \
+    SUKEBEI_PORT=8080
 EXPOSE 8080 51413/tcp 51413/udp
 VOLUME ["/config", "/downloads", "/library"]
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD gosu "${PUID:-99}:${PGID:-100}" python -c "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)); raise SystemExit(0 if data.get('ok') and data.get('aria2') else 1)"
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD gosu "${PUID:-99}:${PGID:-100}" python -c "import json, os, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('SUKEBEI_PORT', '8080') + '/api/health', timeout=3)); raise SystemExit(0 if data.get('ok') and data.get('downloader') else 1)"
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
-CMD ["uvicorn", "app.main:app", "--app-dir", "/app/backend", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "app.main:app", "--app-dir", "/app/backend", "--host", "0.0.0.0"]
+
 
