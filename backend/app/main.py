@@ -31,7 +31,7 @@ from .schemas import (
     SyncFilterSettings,
 )
 from .security import hash_password, new_token, session_for, token_hash, verify_password
-from .transmission import TransmissionClient, TransmissionError
+from .transmission import TransmissionClient, TransmissionError, is_metadata_file
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
