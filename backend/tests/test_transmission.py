@@ -66,7 +66,7 @@ async def test_transmission_status_is_normalised_for_manager(tmp_path: Path):
 
     assert seen["method"] == "torrent-get"
     assert seen["arguments"] == {"ids": ["a" * 40], "fields": [
-        "id", "hashString", "status", "totalSize", "percentDone", "rateDownload",
+        "id", "hashString", "name", "status", "totalSize", "percentDone", "rateDownload",
         "error", "errorString", "downloadDir", "files", "metadataPercentComplete",
     ]}
     assert result["status"] == "active"
