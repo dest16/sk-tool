@@ -88,17 +88,18 @@ def _move_download_unfiltered(staging: Path, library: Path, title: str, job_id: 
         raise UnsafePathError("下载暂存目录越出允许范围")
     if staging_root is not None and staging == staging_root.resolve():
         raise UnsafePathError("暂存目录必须是下载根目录下的任务目录")
-    if not staging.exists() or not staging.is_dir():
-        raise UnsafePathError("下载暂存目录无效")
+    staging_is_file = staging.is_file()
+    if not staging.exists() or (not staging_is_file and not staging.is_dir()):
+        raise UnsafePathError("下载暂存路径无效")
     library.mkdir(parents=True, exist_ok=True)
     if not within(library, library.parent):
         raise UnsafePathError("整理目录无效")
     ensure_no_symlinks(staging)
-    entries = sorted(staging.iterdir(), key=lambda p: p.name.casefold())
+    entries = [staging] if staging_is_file else sorted(staging.iterdir(), key=lambda p: p.name.casefold())
     entries = [entry for entry in entries if not entry.name.startswith(".aria2")]
     if not entries:
         raise FileNotFoundError("下载目录为空")
-    if len(entries) == 1:
+    if staging_is_file or len(entries) == 1:
         final_name = safe_name(entries[0].name)
         source = entries[0]
         wrapper = False
@@ -145,7 +146,7 @@ def _move_download_unfiltered(staging: Path, library: Path, title: str, job_id: 
                         shutil.rmtree(entry) if entry.is_dir() else entry.unlink()
             else:
                 shutil.rmtree(source) if source.is_dir() else source.unlink()
-        if staging.exists() and not any(staging.iterdir()):
+        if staging.is_dir() and staging.exists() and not any(staging.iterdir()):
             staging.rmdir()
         return final_name
     except Exception:
@@ -224,14 +225,15 @@ def _move_download_filtered(
         raise UnsafePathError("下载暂存目录越出允许范围")
     if staging_root is not None and staging == staging_root.resolve():
         raise UnsafePathError("暂存目录必须是下载根目录下的任务目录")
-    if not staging.exists() or not staging.is_dir():
-        raise UnsafePathError("下载暂存目录无效")
+    staging_is_file = staging.is_file()
+    if not staging.exists() or (not staging_is_file and not staging.is_dir()):
+        raise UnsafePathError("下载暂存路径无效")
     ensure_no_symlinks(staging)
-    entries = sorted((entry for entry in staging.iterdir() if not entry.name.startswith(".aria2")), key=lambda p: p.name.casefold())
+    entries = [staging] if staging_is_file else sorted((entry for entry in staging.iterdir() if not entry.name.startswith(".aria2")), key=lambda p: p.name.casefold())
     if not entries:
         raise FileNotFoundError("下载目录为空")
 
-    all_files = sorted(_iter_regular_files(staging), key=lambda path: path.relative_to(staging).as_posix().casefold())
+    all_files = [staging] if staging_is_file else sorted(_iter_regular_files(staging), key=lambda path: path.relative_to(staging).as_posix().casefold())
     selected: list[Path] = []
     skipped_paths: list[Path] = []
     for path in all_files:
@@ -312,7 +314,7 @@ def _move_download_filtered(
                 if source.exists():
                     source.unlink()
         _remove_empty_dirs(staging)
-        if staging.exists() and not any(staging.iterdir()):
+        if staging.is_dir() and staging.exists() and not any(staging.iterdir()):
             staging.rmdir()
         return final_name
     except Exception:
