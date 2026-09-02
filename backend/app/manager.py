@@ -135,6 +135,9 @@ class DownloadManager:
             if task.status not in {"completed_pending_move", "conflict", "filtered"}:
                 raise ValueError("任务尚未完成，不能整理")
             task.status = "moving"
+            # Persist the in-progress state before copying/renaming potentially
+            # large files, so clients do not keep displaying "完成待整理".
+            await self._update(task.id, status="moving", error=None)
             skipped: list[str] = []
             try:
                 filename_regex, min_size_bytes, max_size_bytes = await self._sync_filters()
