@@ -205,6 +205,7 @@ class TransmissionClient:
         fields = [
             "id",
             "hashString",
+            "name",
             "status",
             "totalSize",
             "percentDone",
@@ -220,15 +221,18 @@ class TransmissionClient:
         if not torrents:
             raise TransmissionError(f"Transmission 任务不存在：{gid}")
         torrent = torrents[0]
+        download_dir = Path(torrent.get("downloadDir") or self.settings.download_dir)
+        torrent_name = str(torrent.get("name") or "")
         files = [
             {
-                "path": str(Path(torrent.get("downloadDir") or self.settings.download_dir) / str(item.get("name") or "")),
+                "path": str(download_dir / str(item.get("name") or "")),
                 "length": str(item.get("length") or 0),
                 "completedLength": str(item.get("bytesCompleted") or 0),
                 "selected": "true",
             }
             for item in torrent.get("files") or []
         ]
+        content_path = str(download_dir / torrent_name) if files and torrent_name else None
         total = sum(int(item["length"]) for item in files)
         completed = sum(int(item["completedLength"]) for item in files)
         if not total:
@@ -254,7 +258,8 @@ class TransmissionClient:
             "errorCode": str(error),
             "errorMessage": torrent.get("errorString") or None,
             "files": files,
-            "dir": torrent.get("downloadDir") or str(self.settings.download_dir),
+            "dir": str(download_dir),
+            "contentPath": content_path,
             "followedBy": [],
         }
 
