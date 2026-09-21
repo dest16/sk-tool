@@ -96,7 +96,8 @@ class QBittorrentClient:
                 )
             except httpx.HTTPError as exc:
                 raise QBittorrentError(f"qBittorrent 登录请求失败：{exc}") from exc
-            if response.status_code != 200 or response.text.strip().lower() != "ok.":
+            body = response.text.strip().lower()
+            if response.status_code not in {200, 204} or (body and body not in {"ok", "ok."}):
                 detail = response.text[:200].strip() or response.reason_phrase
                 raise QBittorrentError(f"qBittorrent 登录失败：{detail}", status_code=response.status_code)
             self._authenticated = True

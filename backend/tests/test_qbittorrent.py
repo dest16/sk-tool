@@ -74,6 +74,19 @@ async def test_qbittorrent_add_and_status_map_remote_paths(tmp_path: Path):
     assert add_request[2]["autoTMM"] == ["false"]
 
 
+async def test_qbittorrent_accepts_no_content_login_response(tmp_path: Path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/auth/login"):
+            return httpx.Response(204)
+        if request.url.path.endswith("/app/version"):
+            return httpx.Response(200, text="v5.2.3")
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    downloader = _client(tmp_path, handler)
+    await downloader.start()
+    await downloader.stop()
+
+
 async def test_qbittorrent_completed_and_delete_keep_data(tmp_path: Path):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/auth/login"):
