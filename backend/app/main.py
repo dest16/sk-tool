@@ -31,14 +31,15 @@ from .schemas import (
     SyncFilterSettings,
 )
 from .security import hash_password, new_token, session_for, token_hash, verify_password
-from .transmission import TransmissionClient, TransmissionError, is_metadata_file
+from .downloader import DownloaderError, is_metadata_file
+from .qbittorrent import QBittorrentClient
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def _serialize_files(task: DownloadTask, aria_files: list[dict] | None = None) -> list[dict]:
-    if aria_files is not None:
+def _serialize_files(task: DownloadTask, downloader_files: list[dict] | None = None) -> list[dict]:
+    if downloader_files is not None:
         return [
             {
                 "path": item.get("path", "").replace(str(task.staging_dir), "<暂存目录>"),
@@ -46,7 +47,7 @@ def _serialize_files(task: DownloadTask, aria_files: list[dict] | None = None) -
                 "completed_length": int(item.get("completedLength") or 0),
                 "selected": item.get("selected") == "true",
             }
-            for item in aria_files
+            for item in downloader_files
             if not is_metadata_file(item)
         ]
     root = Path(task.staging_dir)
@@ -59,7 +60,7 @@ def _serialize_files(task: DownloadTask, aria_files: list[dict] | None = None) -
     return files[:500]
 
 
-def task_response(task: DownloadTask, aria_files: list[dict] | None = None) -> DownloadResponse:
+def task_response(task: DownloadTask, downloader_files: list[dict] | None = None) -> DownloadResponse:
     return DownloadResponse(
         id=task.id,
         gid=task.gid,
@@ -71,7 +72,7 @@ def task_response(task: DownloadTask, aria_files: list[dict] | None = None) -> D
         download_speed=task.download_speed,
         eta_seconds=task.eta_seconds,
         error=task.error,
-        files=_serialize_files(task, aria_files),
+        files=_serialize_files(task, downloader_files),
         created_at=task.created_at,
         completed_at=task.completed_at,
         moved_at=task.moved_at,
@@ -80,7 +81,7 @@ def task_response(task: DownloadTask, aria_files: list[dict] | None = None) -> D
 
 settings = get_settings()
 engine, session_factory = create_database(settings)
-downloader = TransmissionClient(settings)
+downloader = QBittorrentClient(settings)
 manager = DownloadManager(settings, session_factory, downloader)
 search_service = SearchService(lambda proxy: SukebeiAdapter(settings.indexer_base_url, settings.request_timeout_seconds, proxy), settings.search_cache_seconds)
 login_attempts: dict[str, list[float]] = defaultdict(list)
@@ -103,13 +104,13 @@ async def lifespan(app: FastAPI):
         await connection.run_sync(Base.metadata.create_all)
     await ensure_setup_token()
     async with session_factory() as session:
-        aria_proxy = await session.get(Setting, "aria2_proxy")
-        downloader.proxy = aria_proxy.value if aria_proxy and aria_proxy.value else None
+        downloader_proxy = await session.get(Setting, "downloader_proxy")
+        downloader.proxy = downloader_proxy.value if downloader_proxy and downloader_proxy.value else None
     try:
         await manager.start()
     except Exception:
-        logger.exception("Transmission 启动失败，Web 服务仍可用于配置检查")
-        # Keep the web process alive and let the manager retry Transmission in the
+        logger.exception("qBittorrent 启动失败，Web 服务仍可用于配置检查")
+        # Keep the web process alive and let the manager retry qBittorrent in the
         # background (for example while a mounted binary or port becomes ready).
         manager._poll_task = asyncio.create_task(manager.poll_loop())
     yield
@@ -173,8 +174,6 @@ async def health():
         "ok": database_ok,
         "database": database_ok,
         "downloader": downloader_ok,
-        # Keep the old health key for existing Docker healthchecks and clients.
-        "aria2": downloader_ok,
         "downloads": settings.download_dir.exists(),
         "library": settings.library_dir.exists(),
     }
@@ -266,7 +265,7 @@ async def meta(context=Depends(require_user)):
 
 
 @app.get("/api/downloads", response_model=DownloadListResponse)
-async def downloads(context=Depends(require_user), downloader_client: TransmissionClient = Depends(lambda: downloader)):
+async def downloads(context=Depends(require_user), downloader_client: QBittorrentClient = Depends(lambda: downloader)):
     async with session_factory() as session:
         rows = await session.execute(select(DownloadTask).order_by(DownloadTask.created_at.desc()))
         tasks = list(rows.scalars())
@@ -290,7 +289,7 @@ async def create_download(payload: DownloadCreateRequest, context=Depends(requir
         raise HTTPException(status_code=422, detail="只接受合法的 BTIH magnet 链接")
     try:
         task = await manager.create(payload.title, payload.magnet_uri, payload.source_url, payload.auto_move)
-    except (TransmissionError, OSError) as exc:
+    except (DownloaderError, OSError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return task_response(task)
 
@@ -303,7 +302,7 @@ async def download_action(task_id: str, action: str, payload: DownloadActionRequ
         task = await manager.action(task_id, action, delete_files=payload.delete_files if payload else True)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except (ValueError, TransmissionError, OSError) as exc:
+    except (ValueError, DownloaderError, OSError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return ActionResponse(task=task_response(task))
 
@@ -323,7 +322,7 @@ async def delete_history(task_id: str, context=Depends(require_write), session: 
 @app.get("/api/settings/proxy", response_model=ProxySettingsResponse)
 async def get_proxy(context=Depends(require_user), session: AsyncSession = Depends(db_session)):
     values = {}
-    for key in ("indexer_proxy", "aria2_proxy"):
+    for key in ("indexer_proxy", "downloader_proxy"):
         setting = await session.get(Setting, key)
         # Never return proxy credentials to the browser. The UI can replace a
         # configured proxy by entering a complete new URL.
@@ -334,8 +333,8 @@ async def get_proxy(context=Depends(require_user), session: AsyncSession = Depen
 
 @app.put("/api/settings/proxy", response_model=ProxySettingsResponse)
 async def put_proxy(payload: ProxySettings, context=Depends(require_write), session: AsyncSession = Depends(db_session)):
-    previous_aria_proxy = (await session.get(Setting, "aria2_proxy"))
-    previous_aria_proxy = previous_aria_proxy.value if previous_aria_proxy else None
+    previous_downloader_proxy = (await session.get(Setting, "downloader_proxy"))
+    previous_downloader_proxy = previous_downloader_proxy.value if previous_downloader_proxy else None
     for key in payload.model_fields_set:
         value = getattr(payload, key)
         setting = await session.get(Setting, key)
@@ -346,16 +345,16 @@ async def put_proxy(payload: ProxySettings, context=Depends(require_write), sess
     await session.commit()
     # The download proxy is applied on restart; clear the cached search adapter immediately.
     search_service.cache.clear()
-    aria_changed = "aria2_proxy" in payload.model_fields_set
-    if aria_changed and previous_aria_proxy != payload.aria2_proxy:
-        downloader.proxy = payload.aria2_proxy
+    downloader_changed = "downloader_proxy" in payload.model_fields_set
+    if downloader_changed and previous_downloader_proxy != payload.downloader_proxy:
+        downloader.proxy = payload.downloader_proxy
         try:
             await downloader.stop()
             await downloader.start()
         except Exception:
-            logger.exception("应用 Transmission 代理设置失败")
+            logger.exception("应用 qBittorrent 连接代理设置失败")
     values = {}
-    for key in ("indexer_proxy", "aria2_proxy"):
+    for key in ("indexer_proxy", "downloader_proxy"):
         setting = await session.get(Setting, key)
         values[f"{key}_configured"] = bool(setting and setting.value)
     return ProxySettingsResponse(
@@ -417,5 +416,4 @@ async def spa(path: str):
     if index.exists():
         return FileResponse(index)
     return JSONResponse({"detail": "前端尚未构建，请运行 npm run build"}, status_code=404)
-
 

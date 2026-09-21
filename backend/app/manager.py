@@ -6,9 +6,9 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from .downloader import Downloader, DownloaderError, is_metadata_file
 from .files import InvalidFilterError, MoveConflictError, NoMatchingFilesError, UnsafePathError, move_download
 from .models import DownloadTask, Setting, utc_now
-from .transmission import TransmissionClient, TransmissionError, is_metadata_file
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ TERMINAL = {"moved", "failed", "cancelled", "conflict", "filtered"}
 
 
 class DownloadManager:
-    def __init__(self, settings, session_factory, downloader: TransmissionClient):
+    def __init__(self, settings, session_factory, downloader: Downloader):
         self.settings = settings
         self.session_factory = session_factory
         self.downloader = downloader
@@ -40,11 +40,13 @@ class DownloadManager:
 
     async def create(self, title: str, magnet_uri: str, source_url: str | None, auto_move: bool) -> DownloadTask:
         task_id = str(uuid.uuid4())
-        # Transmission writes torrent content directly into the download root.
-        # Keep a non-existent private placeholder until metadata reveals the
-        # actual file or directory to associate with this task.
+        # Keep a non-existent private placeholder until qBittorrent metadata
+        # reveals the actual file or directory to associate with this task.
         staging = self.settings.download_dir / f".sukebei-pending-{task_id}"
-        gid = await self.downloader.add_magnet(magnet_uri, self.settings.download_dir)
+        try:
+            gid = await self.downloader.add_magnet(magnet_uri, self.settings.download_dir)
+        except Exception:
+            raise
         task = DownloadTask(
             id=task_id,
             gid=gid,
@@ -77,8 +79,13 @@ class DownloadManager:
                 content_path = self._safe_download_path(status.get("contentPath"))
                 if content_path:
                     cleanup_path = str(content_path)
-            except TransmissionError:
-                pass
+            except DownloaderError as exc:
+                # Completed qBittorrent results are intentionally removed from
+                # the external client before organizing. In that case the
+                # persisted local staging path is the authoritative cleanup
+                # path; other downloader errors must not trigger blind deletes.
+                if delete_files and getattr(exc, "status_code", None) != 404:
+                    cancel_delete_error = f"无法确认下载文件位置，已保留任务记录：{exc}"
         if action == "pause" and task.gid:
             await self.downloader.pause(task.gid)
             task.status = "paused"
@@ -91,11 +98,13 @@ class DownloadManager:
             if task.gid and task.status not in {"completed_pending_move", "conflict", "filtered", "moved"}:
                 await self.downloader.remove(task.gid)
             task.status = "cancelled"
-            if delete_files:
+            if delete_files and cancel_delete_error is None:
                 cancel_delete_error = await self._delete_staging(cleanup_path)
                 task.error = cancel_delete_error
-            else:
+            elif not delete_files:
                 task.error = "任务已删除，暂存文件已保留"
+            else:
+                task.error = cancel_delete_error
         elif action == "retry":
             if task.status not in {"failed", "cancelled"}:
                 raise ValueError("只有失败或已取消的任务可以重试")
@@ -224,11 +233,10 @@ class DownloadManager:
     async def poll_loop(self) -> None:
         while True:
             try:
-                if not self.downloader.process or self.downloader.process.returncode is not None:
-                    try:
-                        await self.downloader.start()
-                    except Exception:
-                        logger.exception("Transmission 尚未就绪，稍后重试")
+                # External downloaders have no local child process. Calling
+                # start() is an idempotent connectivity/authentication check
+                # for both the legacy and qBittorrent adapters.
+                await self.downloader.start()
                 await self.poll_once()
             except asyncio.CancelledError:
                 raise
@@ -253,13 +261,13 @@ class DownloadManager:
                 continue
             try:
                 status = await self.downloader.status(task.gid)
-            except TransmissionError as exc:
+            except DownloaderError as exc:
                 if task.status not in {"paused", "cancelled"}:
                     await self._update(task.id, error=str(exc))
                 continue
             state = status.get("status", "")
-            aria_files = status.get("files") or []
-            metadata_only = bool(aria_files) and all(is_metadata_file(item) for item in aria_files)
+            downloader_files = status.get("files") or []
+            metadata_only = bool(downloader_files) and all(is_metadata_file(item) for item in downloader_files)
             updates = {
                 "total_bytes": int(status.get("totalLength") or 0),
                 "completed_bytes": int(status.get("completedLength") or 0),
@@ -320,7 +328,7 @@ class DownloadManager:
             return
         try:
             await self.downloader.remove_download_result(gid)
-        except TransmissionError as exc:
+        except DownloaderError as exc:
             # A completed metadata/result identifier can disappear while the
             # downloader is creating its child download. It is safe to continue because the
             # payload is already complete and no longer needs to seed.
@@ -355,5 +363,4 @@ class DownloadManager:
 
     async def _save(self, task: DownloadTask) -> None:
         await self._update(task.id, **{k: v for k, v in task.__dict__.items() if k not in {"_sa_instance_state", "id"}})
-
 

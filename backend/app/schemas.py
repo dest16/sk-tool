@@ -50,9 +50,9 @@ class DownloadActionRequest(BaseModel):
 
 class ProxySettings(BaseModel):
     indexer_proxy: str | None = None
-    aria2_proxy: str | None = None
+    downloader_proxy: str | None = None
 
-    @field_validator("indexer_proxy", "aria2_proxy")
+    @field_validator("indexer_proxy", "downloader_proxy")
     @classmethod
     def validate_proxy(cls, value: str | None) -> str | None:
         if value in (None, ""):
@@ -74,9 +74,9 @@ class ProxySettings(BaseModel):
 
 class ProxySettingsResponse(BaseModel):
     indexer_proxy: str | None = None
-    aria2_proxy: str | None = None
+    downloader_proxy: str | None = None
     indexer_proxy_configured: bool = False
-    aria2_proxy_configured: bool = False
+    downloader_proxy_configured: bool = False
 
 
 class SyncFilterSettings(BaseModel):

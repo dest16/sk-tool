@@ -21,7 +21,7 @@ def test_setup_login_csrf_and_redacted_proxy():
         csrf = setup.json()["csrf_token"]
         assert client.get("/api/auth/me").json()["username"] == "admin"
         assert client.post("/api/downloads", json={"magnet_uri": "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "title": "x"}).status_code == 403
-        saved = client.put("/api/settings/proxy", headers={"X-CSRF-Token": csrf}, json={"indexer_proxy": "http://user:secret@example.test:8080", "aria2_proxy": None})
+        saved = client.put("/api/settings/proxy", headers={"X-CSRF-Token": csrf}, json={"indexer_proxy": "http://user:secret@example.test:8080", "downloader_proxy": None})
         assert saved.status_code == 200
         proxy = client.get("/api/settings/proxy")
         assert proxy.status_code == 200

@@ -42,8 +42,8 @@ class DownloadTask(Base):
     __tablename__ = "download_tasks"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    # Transmission uses the torrent's 40-character info hash as its stable
-    # identifier, so this must not be limited to aria2's 16-character GID.
+    # qBittorrent uses the torrent's 40-character info hash as its stable
+    # identifier.
     gid: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(500))
     magnet_uri: Mapped[str] = mapped_column(Text)
@@ -60,6 +60,5 @@ class DownloadTask(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     moved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-
 
 

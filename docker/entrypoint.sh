@@ -41,4 +41,3 @@ fi
 # root-owned bind mount because this process is intentionally not privileged.
 exec "$@"
 
-
