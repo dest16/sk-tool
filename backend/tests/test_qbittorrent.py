@@ -87,6 +87,30 @@ async def test_qbittorrent_accepts_no_content_login_response(tmp_path: Path):
     await downloader.stop()
 
 
+async def test_qbittorrent_accepts_json_add_success_response(tmp_path: Path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/auth/login"):
+            return httpx.Response(204)
+        if request.url.path.endswith("/app/version"):
+            return httpx.Response(200, text="v5.2.3")
+        if request.url.path.endswith("/torrents/add"):
+            return httpx.Response(
+                200,
+                json={
+                    "added_torrent_ids": ["a" * 40],
+                    "failure_count": 0,
+                    "pending_count": 0,
+                    "success_count": 1,
+                },
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    downloader = _client(tmp_path, handler)
+    magnet = "magnet:?xt=urn:btih:" + "A" * 40
+    assert await downloader.add_magnet(magnet, tmp_path / "downloads") == "a" * 40
+    await downloader.stop()
+
+
 async def test_qbittorrent_completed_and_delete_keep_data(tmp_path: Path):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/auth/login"):

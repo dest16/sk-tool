@@ -228,9 +228,21 @@ class QBittorrentClient:
                 "autoTMM": "false",
             },
         )
-        if response.text.strip().lower() != "ok.":
-            raise QBittorrentError(f"qBittorrent 添加任务失败：{response.text[:300]}")
-        return gid
+        body = response.text.strip()
+        if body.lower() in {"ok", "ok."}:
+            return gid
+        try:
+            result = response.json()
+        except ValueError:
+            result = None
+        if isinstance(result, dict):
+            added_ids = {str(value).lower() for value in result.get("added_torrent_ids") or []}
+            success_count = int(result.get("success_count") or 0)
+            pending_count = int(result.get("pending_count") or 0)
+            failure_count = int(result.get("failure_count") or 0)
+            if failure_count == 0 and (gid in added_ids or success_count > 0 or pending_count > 0):
+                return gid
+        raise QBittorrentError(f"qBittorrent 添加任务失败：{body[:300]}")
 
     @staticmethod
     def _state(state: str, progress: float, total: int) -> str:
