@@ -21,6 +21,13 @@ class InvalidFilterError(ValueError):
     """Raised when a configured filename or size filter is invalid."""
 
 
+MAX_COMPONENT_BYTES = 240
+
+
+def _truncate_utf8(value: str, max_bytes: int) -> str:
+    return value.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
+
+
 def safe_name(value: str, fallback: str = "未命名") -> str:
     value = unicodedata.normalize("NFKC", value or "").strip()
     value = re.sub(r"[\x00-\x1f\x7f]", "", value)
@@ -30,7 +37,18 @@ def safe_name(value: str, fallback: str = "未命名") -> str:
         value = fallback
     if value.casefold().split(".")[0] in {"con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "lpt1", "lpt2", "lpt3"}:
         value = f"_{value}"
-    return value[:180]
+    if len(value.encode("utf-8")) > MAX_COMPONENT_BYTES:
+        stem, suffix = os.path.splitext(value)
+        suffix_bytes = len(suffix.encode("utf-8"))
+        if suffix and suffix_bytes < MAX_COMPONENT_BYTES:
+            stem_bytes = MAX_COMPONENT_BYTES - suffix_bytes
+            stem = _truncate_utf8(stem, stem_bytes).rstrip(" .")
+            if not stem:
+                stem = _truncate_utf8(fallback, stem_bytes).rstrip(" .") or "_"
+            value = f"{stem}{suffix}"
+        else:
+            value = _truncate_utf8(value, MAX_COMPONENT_BYTES).rstrip(" .")
+    return value
 
 
 def within(path: Path, root: Path) -> bool:
