@@ -22,6 +22,7 @@ class DownloadManager:
         self.downloader = downloader
         self._poll_task: asyncio.Task | None = None
         self._move_locks: dict[str, asyncio.Lock] = {}
+        self.connection_lock = asyncio.Lock()
 
     async def start(self) -> None:
         self.settings.download_dir.mkdir(parents=True, exist_ok=True)
@@ -39,6 +40,10 @@ class DownloadManager:
         await self.downloader.stop()
 
     async def create(self, title: str, magnet_uri: str, source_url: str | None, auto_move: bool) -> DownloadTask:
+        async with self.connection_lock:
+            return await self._create(title, magnet_uri, source_url, auto_move)
+
+    async def _create(self, title: str, magnet_uri: str, source_url: str | None, auto_move: bool) -> DownloadTask:
         task_id = str(uuid.uuid4())
         # Keep a non-existent private placeholder until qBittorrent metadata
         # reveals the actual file or directory to associate with this task.
@@ -68,6 +73,10 @@ class DownloadManager:
             return await session.get(DownloadTask, task_id)
 
     async def action(self, task_id: str, action: str, *, delete_files: bool = True) -> DownloadTask:
+        async with self.connection_lock:
+            return await self._action(task_id, action, delete_files=delete_files)
+
+    async def _action(self, task_id: str, action: str, *, delete_files: bool = True) -> DownloadTask:
         task = await self.get(task_id)
         if not task:
             raise KeyError("任务不存在")
@@ -248,8 +257,9 @@ class DownloadManager:
                 # External downloaders have no local child process. Calling
                 # start() is an idempotent connectivity/authentication check
                 # for both the legacy and qBittorrent adapters.
-                await self.downloader.start()
-                await self.poll_once()
+                async with self.connection_lock:
+                    await self.downloader.start()
+                    await self._poll_once()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -257,6 +267,10 @@ class DownloadManager:
             await asyncio.sleep(2)
 
     async def poll_once(self) -> None:
+        async with self.connection_lock:
+            await self._poll_once()
+
+    async def _poll_once(self) -> None:
         async with self.session_factory() as session:
             result = await session.execute(select(DownloadTask).where(DownloadTask.status.not_in(TERMINAL)))
             tasks = list(result.scalars())

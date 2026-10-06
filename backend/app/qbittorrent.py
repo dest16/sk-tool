@@ -71,7 +71,7 @@ class QBittorrentClient:
         if self._client is None:
             kwargs: dict[str, Any] = {
                 "timeout": getattr(self.settings, "qbittorrent_timeout_seconds", 8.0),
-                "follow_redirects": True,
+                "follow_redirects": False,
                 "trust_env": False,
             }
             self._client = httpx.AsyncClient(**kwargs)
@@ -85,7 +85,7 @@ class QBittorrentClient:
             username = str(self.settings.qbittorrent_username or "")
             password = self.settings.qbittorrent_password.get_secret_value()
             if not username or not password:
-                raise QBittorrentError("未配置 qBittorrent 账号或密码")
+                raise QBittorrentError("未配置 qBittorrent 账号或密码，请在界面“qBittorrent 连接”中设置")
             try:
                 response = await client.post(
                     f"{self.api_url}/auth/login",
@@ -96,8 +96,7 @@ class QBittorrentClient:
                 raise QBittorrentError(f"qBittorrent 登录请求失败：{exc}") from exc
             body = response.text.strip().lower()
             if response.status_code not in {200, 204} or (body and body not in {"ok", "ok."}):
-                detail = response.text[:200].strip() or response.reason_phrase
-                raise QBittorrentError(f"qBittorrent 登录失败：{detail}", status_code=response.status_code)
+                raise QBittorrentError("qBittorrent 登录失败，请检查账号、密码及 WebUI 访问限制", status_code=response.status_code)
             self._authenticated = True
 
     async def _request(

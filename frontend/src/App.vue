@@ -30,6 +30,8 @@ const filters = reactive({ category: "0_0", sort: "", order: "desc" });
 const setup = reactive({ token: "", username: "admin", password: "" });
 const login = reactive({ username: "", password: "" });
 const moveOnComplete = ref(true);
+const qb = reactive({ url: "", username: "", password: "", password_configured: false, save_path: "" });
+const qbBusy = ref(false);
 const syncFilters = reactive({ filename_regex: "", min_size_mib: "", max_size_mib: "" });
 const pendingCancelTask = ref<Download | null>(null);
 const deleteFilesOnCancel = ref(true);
@@ -60,7 +62,7 @@ async function bootstrap() {
       try {
         const me = await api("/api/auth/me");
         loggedIn.value = true; username.value = me.username; csrf.value = me.csrf_token;
-        await loadMeta(); await refreshDownloads(); await loadFilters();
+        await loadMeta(); await loadQbSettings(); await refreshDownloads(); await loadFilters();
       } catch { loggedIn.value = false; }
     }
   } catch (err) { error.value = (err as Error).message; }
@@ -68,20 +70,32 @@ async function bootstrap() {
 }
 
 async function loadMeta() { const data = await api("/api/meta"); categories.value = data.categories; sorts.value = data.sorts; }
+async function loadQbSettings() { const data = await api("/api/settings/qbittorrent"); Object.assign(qb, data, { password: "" }); }
+async function configureQb(save: boolean) {
+  qbBusy.value = true; error.value = ""; notice.value = "";
+  try {
+    const payload: { url: string; username: string; password?: string } = { url: qb.url, username: qb.username };
+    if (qb.password) payload.password = qb.password;
+    const data = await api(save ? "/api/settings/qbittorrent" : "/api/settings/qbittorrent/test", { method: save ? "PUT" : "POST", body: JSON.stringify(payload) });
+    if (save) { Object.assign(qb, data, { password: "" }); notice.value = "qBittorrent 配置已保存并立即生效，重启后仍保留"; await refreshDownloads(); }
+    else notice.value = `连接成功，qBittorrent ${data.version}`;
+  } catch (err) { error.value = (err as Error).message; }
+  finally { qbBusy.value = false; }
+}
 function formatMiB(value: number | null) { if (value === null || value === undefined) return ""; const mib = value / 1024 / 1024; return String(Math.round(mib * 100) / 100); }
 async function loadFilters() { const data = await api("/api/settings/filters"); syncFilters.filename_regex = data.filename_regex || ""; syncFilters.min_size_mib = formatMiB(data.min_size_bytes); syncFilters.max_size_mib = formatMiB(data.max_size_bytes); }
 async function doSetup() {
   error.value = "";
   try { const data = await api("/api/setup", { method: "POST", body: JSON.stringify({ setup_token: setup.token, username: setup.username, password: setup.password }) });
-    loggedIn.value = true; setupRequired.value = false; username.value = data.username; csrf.value = data.csrf_token; await loadMeta(); await loadFilters(); await refreshDownloads(); startPolling(); notice.value = "初始化成功";
+    loggedIn.value = true; setupRequired.value = false; username.value = data.username; csrf.value = data.csrf_token; await loadMeta(); await loadQbSettings(); await loadFilters(); await refreshDownloads(); startPolling(); notice.value = "初始化成功";
   } catch (err) { error.value = (err as Error).message; }
 }
 async function doLogin() {
   error.value = "";
-  try { const data = await api("/api/auth/login", { method: "POST", body: JSON.stringify(login) }); loggedIn.value = true; username.value = data.username; csrf.value = data.csrf_token; await loadMeta(); await refreshDownloads(); await loadFilters(); startPolling(); }
+  try { const data = await api("/api/auth/login", { method: "POST", body: JSON.stringify(login) }); loggedIn.value = true; username.value = data.username; csrf.value = data.csrf_token; await loadMeta(); await loadQbSettings(); await refreshDownloads(); await loadFilters(); startPolling(); }
   catch (err) { error.value = (err as Error).message; }
 }
-async function doLogout() { try { await api("/api/auth/logout", { method: "POST" }); } finally { loggedIn.value = false; csrf.value = ""; stopPolling(); } }
+async function doLogout() { try { await api("/api/auth/logout", { method: "POST" }); } finally { loggedIn.value = false; csrf.value = ""; qb.password = ""; stopPolling(); } }
 
 async function search(reset = true) {
   if (!query.value.trim()) { results.value = []; return; }
@@ -165,6 +179,16 @@ onUnmounted(stopPolling);
     <template v-else>
       <header class="topbar"><div><div class="eyebrow">SUK EBEI / MANAGER</div><h1>下载工作台</h1></div><div class="account"><span>{{ username }}</span><button class="ghost" @click="doLogout">退出</button></div></header>
       <div v-if="error" class="alert error">{{ error }}<button @click="error = ''">×</button></div><div v-if="notice" class="alert success">{{ notice }}<button @click="notice = ''">×</button></div>
+      <section class="panel settings">
+        <div class="panel-heading"><div><div class="eyebrow">DOWNLOADER</div><h2>qBittorrent 连接</h2></div></div>
+        <p class="muted">{{ qb.password_configured ? '密码已配置，留空保持原密码。' : '尚未配置密码，请先填写并保存。' }} 配置保存在 /config，保存后立即生效。下载路径保持 {{ qb.save_path }}，不会修改 qB 容器或挂载。</p>
+        <form class="qb-grid" @submit.prevent="configureQb(true)">
+          <label>WebUI 地址<input v-model="qb.url" type="url" placeholder="http://10.10.0.213:8080" required :disabled="qbBusy" /></label>
+          <label>qB 用户名<input v-model="qb.username" autocomplete="username" required :disabled="qbBusy" /></label>
+          <label>qB 密码<input v-model="qb.password" type="password" autocomplete="new-password" :placeholder="qb.password_configured ? '已配置，留空不修改' : '请输入密码'" :disabled="qbBusy" /></label>
+          <div class="qb-actions"><button type="button" class="ghost" :disabled="qbBusy" @click="configureQb(false)">测试连接</button><button class="primary" :disabled="qbBusy">{{ qbBusy ? '连接中…' : '保存并连接' }}</button></div>
+        </form>
+      </section>
       <section class="panel search-panel"><div class="panel-heading"><div><div class="eyebrow">INDEXER</div><h2>搜索资源</h2></div><span class="muted">sukebei.nyaa.si</span></div>
         <form class="search-form" @submit.prevent="search(true)"><input v-model="query" class="search-input" placeholder="输入关键词…" /><select v-model="filters.category"><option v-for="(label, key) in categories" :key="key" :value="key">{{ label }}</option></select><select v-model="filters.sort"><option v-for="(label, key) in sorts" :key="key" :value="key">{{ label }}</option></select><select v-model="filters.order"><option value="desc">降序</option><option value="asc">升序</option></select><button class="primary">搜索</button></form>
         <div v-if="results.length" class="results"><div class="result-row result-head"><span>标题</span><span>大小</span><span>日期</span><span>做种 / 下载</span><span></span></div><div v-for="item in results" :key="item.result_id" class="result-row"><div><a v-if="item.details_url" :href="item.details_url" target="_blank" rel="noreferrer">{{ item.title }}</a><span v-else>{{ item.title }}</span><small>{{ item.category }}</small></div><span>{{ item.size_text }}</span><span>{{ item.published_at ? new Date(item.published_at).toLocaleDateString('zh-CN') : '—' }}</span><span><b class="seed">{{ item.seeders }}</b> / <b class="leech">{{ item.leechers }}</b></span><button class="small-action" @click="selected = item">下载</button></div><button v-if="hasNext" class="load-more" @click="nextPage">加载下一页</button></div><div v-else-if="query" class="empty">没有结果，换个关键词试试。</div>

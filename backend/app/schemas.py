@@ -1,6 +1,7 @@
 from datetime import datetime
 import re
-from pydantic import BaseModel, Field, field_validator
+from urllib.parse import urlparse
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 
 class SetupRequest(BaseModel):
@@ -12,6 +13,45 @@ class SetupRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class QBittorrentSettingsRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+    username: str = Field(min_length=1, max_length=128)
+    # Omitted or blank means retain the existing password.
+    password: SecretStr | None = None
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        value = value.strip().rstrip("/")
+        parsed = urlparse(value)
+        if any(char.isspace() or ord(char) < 32 for char in value):
+            raise ValueError("地址不能包含空白或控制字符")
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("请输入完整的 http 或 https 地址")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("地址不能内嵌账号密码、查询参数或片段")
+        try:
+            parsed.port
+        except ValueError as exc:
+            raise ValueError("端口无效") from exc
+        return value
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, value: str) -> str:
+        value = value.strip()
+        if not value or any(ord(char) < 32 for char in value):
+            raise ValueError("请输入有效的 qBittorrent 用户名")
+        return value
+
+
+class QBittorrentSettingsResponse(BaseModel):
+    url: str
+    username: str
+    password_configured: bool
+    save_path: str
 
 
 class SearchResult(BaseModel):

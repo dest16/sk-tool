@@ -1,10 +1,12 @@
 import asyncio
+import json
 import logging
 import secrets
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from pydantic import SecretStr
 
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
@@ -24,6 +26,8 @@ from .schemas import (
     DownloadListResponse,
     DownloadResponse,
     LoginRequest,
+    QBittorrentSettingsRequest,
+    QBittorrentSettingsResponse,
     SearchResponse,
     SetupRequest,
     SyncFilterSettings,
@@ -97,6 +101,33 @@ downloader = QBittorrentClient(settings)
 manager = DownloadManager(settings, session_factory, downloader)
 search_service = SearchService(lambda: SukebeiAdapter(settings.indexer_base_url, settings.request_timeout_seconds), settings.search_cache_seconds)
 login_attempts: dict[str, list[float]] = defaultdict(list)
+qb_settings_lock = asyncio.Lock()
+
+
+def qb_settings_response() -> QBittorrentSettingsResponse:
+    current = downloader.settings
+    return QBittorrentSettingsResponse(
+        url=current.qbittorrent_url,
+        username=current.qbittorrent_username,
+        password_configured=bool(current.qbittorrent_password.get_secret_value()),
+        save_path=current.qbittorrent_save_path,
+    )
+
+
+async def load_qb_settings() -> None:
+    global downloader
+    async with session_factory() as session:
+        saved = await session.get(Setting, "qbittorrent_connection")
+    if saved:
+        values = json.loads(saved.value)
+        validated = QBittorrentSettingsRequest(**values)
+        configured = settings.model_copy(update={
+            "qbittorrent_url": validated.url,
+            "qbittorrent_username": validated.username,
+            "qbittorrent_password": validated.password or SecretStr(""),
+        })
+        downloader = QBittorrentClient(configured)
+        manager.downloader = downloader
 
 
 async def ensure_setup_token() -> None:
@@ -115,6 +146,7 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     await ensure_setup_token()
+    await load_qb_settings()
     async with session_factory() as session:
         # Remove obsolete proxy settings, including any stored credentials.
         await session.execute(delete(Setting).where(Setting.key.in_(["indexer_proxy", "downloader_proxy"])))
@@ -328,6 +360,75 @@ async def delete_history(task_id: str, context=Depends(require_write), session: 
     await session.delete(task)
     await session.commit()
     return {"ok": True}
+
+
+@app.get("/api/settings/qbittorrent", response_model=QBittorrentSettingsResponse)
+async def get_qb_settings(context=Depends(require_user)):
+    return qb_settings_response()
+
+
+def qb_candidate(payload: QBittorrentSettingsRequest) -> QBittorrentClient:
+    password = payload.password
+    if password is None or not password.get_secret_value():
+        password = downloader.settings.qbittorrent_password
+    if not password.get_secret_value():
+        raise HTTPException(status_code=422, detail="首次配置请填写 qBittorrent 密码")
+    configured = downloader.settings.model_copy(update={
+        "qbittorrent_url": payload.url,
+        "qbittorrent_username": payload.username,
+        "qbittorrent_password": password,
+    })
+    return QBittorrentClient(configured)
+
+
+async def probe_qb(candidate: QBittorrentClient) -> dict:
+    try:
+        return await candidate.version()
+    except DownloaderError:
+        # Never echo upstream response bodies or submitted credentials.
+        raise HTTPException(status_code=502, detail="连接失败，请检查 qBittorrent 地址、账号密码和 WebUI 访问限制") from None
+
+
+@app.post("/api/settings/qbittorrent/test")
+async def test_qb_settings(payload: QBittorrentSettingsRequest, context=Depends(require_write)):
+    async with qb_settings_lock:
+        candidate = qb_candidate(payload)
+        try:
+            result = await probe_qb(candidate)
+            return {"ok": True, "version": result["version"]}
+        finally:
+            await candidate.stop()
+
+
+@app.put("/api/settings/qbittorrent", response_model=QBittorrentSettingsResponse)
+async def put_qb_settings(payload: QBittorrentSettingsRequest, context=Depends(require_write), session: AsyncSession = Depends(db_session)):
+    global downloader
+    async with qb_settings_lock:
+        candidate = qb_candidate(payload)
+        installed = False
+        try:
+            await probe_qb(candidate)
+            async with manager.connection_lock:
+                value = json.dumps({
+                    "url": payload.url,
+                    "username": payload.username,
+                    "password": candidate.settings.qbittorrent_password.get_secret_value(),
+                })
+                saved = await session.get(Setting, "qbittorrent_connection")
+                if saved:
+                    saved.value = value
+                else:
+                    session.add(Setting(key="qbittorrent_connection", value=value))
+                await session.commit()
+                previous = downloader
+                downloader = candidate
+                manager.downloader = candidate
+                installed = True
+                await previous.stop()
+            return qb_settings_response()
+        finally:
+            if not installed:
+                await candidate.stop()
 
 
 @app.get("/api/settings/filters")
