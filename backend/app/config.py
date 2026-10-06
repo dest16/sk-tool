@@ -24,7 +24,8 @@ class Settings(BaseSettings):
     qbittorrent_username: str = ""
     qbittorrent_password: SecretStr = SecretStr("")
     # Path as seen inside the external qBittorrent container. The Unraid
-    # deployment maps /downloads/18x there to this application's /downloads.
+    # deployment mounts the same /downloads root in both containers and sets
+    # this application's download_dir to /downloads/18x.
     qbittorrent_save_path: str = "/downloads/18x"
     qbittorrent_timeout_seconds: float = Field(default=8.0, ge=2, le=120)
 
@@ -41,4 +42,3 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
-

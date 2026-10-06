@@ -1,4 +1,5 @@
 data/
+.venv/
 frontend/node_modules/
 frontend/dist/
 backend/.pytest_cache/
@@ -8,4 +9,3 @@ backend/**/__pycache__/
 .pytest_cache/
 .npm-cache/
 *.tsbuildinfo
-

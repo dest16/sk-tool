@@ -108,11 +108,23 @@ class DownloadManager:
         elif action == "retry":
             if task.status not in {"failed", "cancelled"}:
                 raise ValueError("只有失败或已取消的任务可以重试")
-            staging = self.settings.download_dir / f".sukebei-pending-{task.id}"
-            task.staging_dir = str(staging)
-            task.gid = await self.downloader.add_magnet(task.magnet_uri, self.settings.download_dir)
-            task.status = "waiting"
-            task.error = None
+            staging = self._safe_download_path(task.staging_dir)
+            if task.status == "failed" and task.completed_at is not None and staging and staging.exists():
+                # The payload is already downloaded: retry organizing, not qB.
+                task.status = "completed_pending_move"
+                task.error = None
+                await self.move(task)
+            else:
+                gid = await self.downloader.add_magnet(task.magnet_uri, self.settings.download_dir)
+                task.staging_dir = str(self.settings.download_dir / f".sukebei-pending-{task.id}")
+                task.gid = gid
+                task.status = "waiting"
+                task.completed_at = None
+                task.completed_bytes = 0
+                task.total_bytes = 0
+                task.download_speed = 0
+                task.eta_seconds = None
+                task.error = None
         elif action == "cleanup":
             if task.status not in {"failed", "cancelled", "filtered"}:
                 raise ValueError("只有失败、已取消或被过滤的任务可以清理暂存文件")
@@ -363,4 +375,3 @@ class DownloadManager:
 
     async def _save(self, task: DownloadTask) -> None:
         await self._update(task.id, **{k: v for k, v in task.__dict__.items() if k not in {"_sa_instance_state", "id"}})
-

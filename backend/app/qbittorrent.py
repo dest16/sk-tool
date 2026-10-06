@@ -21,9 +21,8 @@ class QBittorrentError(DownloaderError):
 class QBittorrentClient:
     """Async qBittorrent Web API adapter with safe remote/local path mapping."""
 
-    def __init__(self, settings, proxy: str | None = None):
+    def __init__(self, settings):
         self.settings = settings
-        self.proxy = proxy
         self._client: httpx.AsyncClient | None = None
         self._started = False
         self._authenticated = False
@@ -73,9 +72,8 @@ class QBittorrentClient:
             kwargs: dict[str, Any] = {
                 "timeout": getattr(self.settings, "qbittorrent_timeout_seconds", 8.0),
                 "follow_redirects": True,
+                "trust_env": False,
             }
-            if self.proxy:
-                kwargs["proxy"] = self.proxy
             self._client = httpx.AsyncClient(**kwargs)
         return self._client
 
@@ -252,7 +250,7 @@ class QBittorrentClient:
             return "active"
         if progress >= 1 or state in {"uploading", "stalledUP", "queuedUP", "forcedUP", "checkingUP"}:
             return "complete"
-        if state in {"pausedDL", "pausedUP"}:
+        if state in {"pausedDL", "pausedUP", "stoppedDL", "stoppedUP", "stoppedMetaDL"}:
             return "paused"
         if state == "metaDL" or (not total and progress < 1):
             return "metadata"
@@ -328,11 +326,19 @@ class QBittorrentClient:
             "eta": eta,
         }
 
+    async def _control(self, gid: str, current: str, legacy: str) -> Any:
+        try:
+            return await self._request("POST", f"/torrents/{current}", data={"hashes": gid})
+        except QBittorrentError as exc:
+            if exc.status_code != 404:
+                raise
+            return await self._request("POST", f"/torrents/{legacy}", data={"hashes": gid})
+
     async def pause(self, gid: str) -> Any:
-        return await self._request("POST", "/torrents/pause", data={"hashes": gid})
+        return await self._control(gid, "stop", "pause")
 
     async def resume(self, gid: str) -> Any:
-        return await self._request("POST", "/torrents/resume", data={"hashes": gid})
+        return await self._control(gid, "start", "resume")
 
     async def remove(self, gid: str) -> Any:
         try:

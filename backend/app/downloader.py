@@ -11,7 +11,6 @@ class DownloaderError(RuntimeError):
 
 
 class Downloader(Protocol):
-    proxy: str | None
 
     async def start(self) -> None: ...
 

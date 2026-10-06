@@ -181,6 +181,9 @@ def _move_download_unfiltered(staging: Path, library: Path, title: str, job_id: 
                     os.replace(temp, source)
             except OSError:
                 pass
+        if same_device and temp.exists():
+            # This may be the only remaining copy after a failed rollback.
+            raise OSError(f"整理回滚未完成，文件已保留在 {temp}")
         if temp.exists():
             shutil.rmtree(temp) if temp.is_dir() else temp.unlink()
         raise
@@ -354,6 +357,9 @@ def _move_download_filtered(
                     temp.rmdir()
             except OSError:
                 pass
+        if same_device and temp.exists():
+            # Never remove files that could not be restored to staging.
+            raise OSError(f"整理回滚未完成，文件已保留在 {temp}")
         if temp.exists():
             shutil.rmtree(temp) if temp.is_dir() else temp.unlink()
         raise
@@ -391,4 +397,3 @@ def move_download(
         max_size_bytes,
         skipped,
     )
-

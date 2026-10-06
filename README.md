@@ -21,7 +21,7 @@ docker compose logs -f sukebei-manager
 | 容器路径 | 用途 |
 | --- | --- |
 | `/config` | SQLite 和初始化状态 |
-| `/downloads` | 管理容器看到的下载暂存目录，对应 qBittorrent 的 `/downloads/18x` |
+| `/downloads` | 与 qBittorrent 挂载同一下载根目录，实际下载使用 `/downloads/18x` |
 | `/library` | 下载完成后的唯一整理目录 |
 
 服务端口：
@@ -30,7 +30,7 @@ docker compose logs -f sukebei-manager
 | --- | --- |
 | `8080/tcp` | Web 界面和 API（可用 `WEB_PORT` 修改） |
 
-下载器由外部 qBittorrent 提供，管理镜像不再内置 aria2、Transmission 或 BitTorrent 监听端口。qBittorrent 的地址、账号、密码和容器内保存路径通过 `SUKEBEI_QBITTORRENT_URL`、`SUKEBEI_QBITTORRENT_USERNAME`、`SUKEBEI_QBITTORRENT_PASSWORD`、`SUKEBEI_QBITTORRENT_SAVE_PATH` 配置。当前 Unraid 部署应使用 `http://10.10.0.213:8080` 和 `/downloads/18x`；qBittorrent 的 UPnP/入站端口由 qBittorrent 容器自身负责。
+下载器由外部 qBittorrent 提供，管理镜像不再内置 aria2、Transmission 或 BitTorrent 监听端口。qBittorrent 的地址、账号、密码和容器内保存路径通过 `SUKEBEI_QBITTORRENT_URL`、`SUKEBEI_QBITTORRENT_USERNAME`、`SUKEBEI_QBITTORRENT_PASSWORD`、`SUKEBEI_QBITTORRENT_SAVE_PATH` 配置。Unraid 中两容器均将 `/mnt/disks/downloads` 挂载为 `/downloads`，管理容器设置 `SUKEBEI_DOWNLOAD_DIR=/downloads/18x`，并保持 bridge 网络。当前 Unraid 部署应使用 `http://10.10.0.213:8080` 和 `/downloads/18x`；qBittorrent 的 UPnP/入站端口由 qBittorrent 容器自身负责。
 
 登录后在“完成后同步过滤”中可配置文件名正则和单文件大小范围（MiB）。整理时只同步同时满足条件的文件；未匹配文件会保留在 `/downloads` 下对应的文件或 torrent 内容目录，任务标记为“已整理”并显示跳过数量。如果没有任何文件匹配，任务会标记为“无文件符合过滤条件”，修改规则后可再次点击“移动到整理目录”。清空全部过滤项即可恢复整任务整理。
 
@@ -70,6 +70,5 @@ pytest -q
 - 只有管理员会话可以搜索、创建和控制任务。
 - qBittorrent Web API 使用 Cookie 登录；账号密码只从环境变量读取，不写入代码或 API 响应。
 - 只接受合法 BTIH magnet；整理操作拒绝路径穿越、符号链接和目标覆盖。
-- 站点和下载器连接代理可在设置中分别配置，凭据不会出现在 API 响应或日志中。
+- 站点与 qBittorrent Web API 使用直连，不提供网络代理设置。
 - 建议通过 HTTPS 反向代理暴露服务，并遵守目标站点、内容来源和所在地区的适用法律及服务条款。
-

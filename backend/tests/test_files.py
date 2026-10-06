@@ -11,6 +11,43 @@ def test_safe_name():
     assert safe_name("...") == "未命名"
 
 
+@pytest.mark.parametrize("suffix", ["", ".mp4"])
+def test_safe_name_limits_utf8_bytes_and_keeps_extension(suffix):
+    result = safe_name("桜空测试" * 100 + suffix)
+    assert len(result.encode("utf-8")) <= 240
+    assert result.endswith(suffix)
+    assert "�" not in result
+
+
+@pytest.mark.parametrize("filtered", [False, True])
+@pytest.mark.parametrize("multiple", [False, True])
+def test_failed_rollback_preserves_only_copy(tmp_path, monkeypatch, filtered, multiple):
+    staging = tmp_path / "downloads" / "job"
+    library = tmp_path / "library"
+    staging.mkdir(parents=True)
+    (staging / "a.mp4").write_bytes(b"payload-a")
+    if multiple:
+        (staging / "b.mp4").write_bytes(b"payload-b")
+    temporary = library / ".sukebei-moving-job"
+    real_replace = os.replace
+
+    def failing_replace(source, target):
+        source = Path(source)
+        if source == temporary or temporary in source.parents:
+            raise OSError("simulated final rename and rollback failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    kwargs = {"filename_regex": r"\.mp4$"} if filtered else {}
+    with pytest.raises(OSError, match="文件已保留"):
+        move_download(staging, library, "title", "job", **kwargs)
+    if multiple:
+        assert (temporary / "a.mp4").read_bytes() == b"payload-a"
+        assert (temporary / "b.mp4").read_bytes() == b"payload-b"
+    else:
+        assert temporary.read_bytes() == b"payload-a"
+
+
 def test_move_single_file(tmp_path: Path):
     staging = tmp_path / "downloads" / "job"
     library = tmp_path / "library"
@@ -119,4 +156,3 @@ def test_filter_rejects_invalid_regex_and_range(tmp_path: Path):
         move_download(staging, library, "title", "job", filename_regex="[")
     with pytest.raises(ValueError):
         move_download(staging, library, "title", "job", min_size_bytes=10, max_size_bytes=1)
-

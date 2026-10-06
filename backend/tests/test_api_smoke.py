@@ -8,10 +8,35 @@ os.environ["SUKEBEI_LIBRARY_DIR"] = tempfile.mkdtemp(prefix="sukebei-library-")
 
 from fastapi.testclient import TestClient
 
-from app.main import app, settings
+from app.main import app, settings, _serialize_files
+from app.models import DownloadTask
 
 
-def test_setup_login_csrf_and_redacted_proxy():
+def test_single_file_list_after_downloader_record_removed():
+    path = settings.download_dir / "single-video.mp4"
+    path.write_bytes(b"payload")
+    try:
+        files = _serialize_files(DownloadTask(staging_dir=str(path)))
+        assert files == [{"path": path.name, "length": 7, "completed_length": 7, "selected": True}]
+    finally:
+        path.unlink()
+
+
+def test_file_list_rejects_paths_outside_downloads(tmp_path):
+    path = tmp_path / "private.txt"
+    path.write_text("private")
+    assert _serialize_files(DownloadTask(staging_dir=str(path))) == []
+
+
+def test_file_list_is_bounded():
+    with tempfile.TemporaryDirectory(dir=settings.download_dir) as directory:
+        root = Path(directory)
+        for index in range(505):
+            (root / f"{index}.mp4").touch()
+        assert len(_serialize_files(DownloadTask(staging_dir=str(root)))) == 500
+
+
+def test_setup_login_csrf_and_removed_proxy():
     with TestClient(app) as client:
         assert client.get("/").status_code == 200
         assert client.get("/api/does-not-exist").status_code == 404
@@ -21,12 +46,8 @@ def test_setup_login_csrf_and_redacted_proxy():
         csrf = setup.json()["csrf_token"]
         assert client.get("/api/auth/me").json()["username"] == "admin"
         assert client.post("/api/downloads", json={"magnet_uri": "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "title": "x"}).status_code == 403
-        saved = client.put("/api/settings/proxy", headers={"X-CSRF-Token": csrf}, json={"indexer_proxy": "http://user:secret@example.test:8080", "downloader_proxy": None})
-        assert saved.status_code == 200
-        proxy = client.get("/api/settings/proxy")
-        assert proxy.status_code == 200
-        assert proxy.json()["indexer_proxy"] is None
-        assert proxy.json()["indexer_proxy_configured"] is True
+        assert client.get("/api/settings/proxy").status_code == 404
+        assert client.put("/api/settings/proxy", headers={"X-CSRF-Token": csrf}, json={}).status_code in {404, 405}
         filters = client.get("/api/settings/filters")
         assert filters.status_code == 200
         assert filters.json() == {"filename_regex": None, "min_size_bytes": None, "max_size_bytes": None}
@@ -42,4 +63,3 @@ def test_setup_login_csrf_and_redacted_proxy():
             headers={"X-CSRF-Token": csrf},
             json={"filename_regex": "["},
         ).status_code == 422
-

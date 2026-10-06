@@ -66,10 +66,9 @@ def btih_from_magnet(magnet: str) -> str | None:
 
 
 class SukebeiAdapter:
-    def __init__(self, base_url: str, timeout: float = 20, proxy: str | None = None, client: httpx.AsyncClient | None = None):
+    def __init__(self, base_url: str, timeout: float = 20, client: httpx.AsyncClient | None = None):
         self.base_url = base_url.rstrip("/") + "/"
         self.timeout = timeout
-        self.proxy = proxy
         self._client = client
 
     async def fetch(self, query: str, category: str = "0_0", page: int = 1, sort: str = "", order: str = "desc") -> SearchResponse:
@@ -87,7 +86,7 @@ class SukebeiAdapter:
             params.update({"s": sort, "o": order})
         url = self.base_url + "?" + urlencode(params)
         close_client = self._client is None
-        client = self._client or httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, proxy=self.proxy, headers={"User-Agent": "SukebeiManager/1.0"})
+        client = self._client or httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, trust_env=False, headers={"User-Agent": "SukebeiManager/1.0"})
         response = None
         succeeded = False
         last_error: Exception | None = None
@@ -184,15 +183,14 @@ class SearchService:
         self.cache: dict[tuple, tuple[float, SearchResponse]] = {}
         self.lock = asyncio.Lock()
 
-    async def search(self, query: str, category: str, page: int, sort: str, order: str, proxy: str | None = None) -> SearchResponse:
-        key = (query.strip(), category, page, sort, order, proxy)
+    async def search(self, query: str, category: str, page: int, sort: str, order: str) -> SearchResponse:
+        key = (query.strip(), category, page, sort, order)
         async with self.lock:
             cached = self.cache.get(key)
             if cached and monotonic() - cached[0] < self.ttl:
                 return cached[1]
-        result = await self.adapter_factory(proxy).fetch(query, category, page, sort, order)
+        result = await self.adapter_factory().fetch(query, category, page, sort, order)
         if self.ttl:
             async with self.lock:
                 self.cache[key] = (monotonic(), result)
         return result
-

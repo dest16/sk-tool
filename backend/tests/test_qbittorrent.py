@@ -2,9 +2,58 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 import httpx
+import pytest
 
 from app.config import Settings
 from app.qbittorrent import QBittorrentClient, QBittorrentError
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_control_supports_qb4_and_qb5(tmp_path: Path, legacy):
+    calls = []
+
+    def handler(request):
+        endpoint = request.url.path.rsplit("/", 1)[-1]
+        if endpoint == "login":
+            return httpx.Response(200, text="Ok.")
+        assert parse_qs(request.content.decode())["hashes"] == ["a" * 40]
+        calls.append(endpoint)
+        return httpx.Response(404 if legacy and endpoint in {"stop", "start"} else 200)
+
+    downloader = _client(tmp_path, handler)
+    try:
+        await downloader.pause("a" * 40)
+        await downloader.resume("a" * 40)
+    finally:
+        await downloader.stop()
+    assert calls == (["stop", "pause", "start", "resume"] if legacy else ["stop", "start"])
+
+
+async def test_control_does_not_fallback_on_server_failure(tmp_path: Path):
+    calls = []
+
+    def handler(request):
+        if request.url.path.endswith("/login"):
+            return httpx.Response(200, text="Ok.")
+        calls.append(request.url.path)
+        return httpx.Response(500)
+
+    downloader = _client(tmp_path, handler)
+    try:
+        with pytest.raises(QBittorrentError):
+            await downloader.pause("a" * 40)
+    finally:
+        await downloader.stop()
+    assert calls == ["/api/v2/torrents/stop"]
+
+
+@pytest.mark.parametrize("state", ["pausedDL", "stoppedDL", "stoppedMetaDL"])
+def test_stopped_download_is_paused(state):
+    assert QBittorrentClient._state(state, 0, 0) == "paused"
+
+
+def test_stopped_completed_download_is_complete():
+    assert QBittorrentClient._state("stoppedUP", 1, 100) == "complete"
 
 
 def _settings(tmp_path: Path) -> Settings:

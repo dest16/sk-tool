@@ -24,8 +24,6 @@ from .schemas import (
     DownloadListResponse,
     DownloadResponse,
     LoginRequest,
-    ProxySettings,
-    ProxySettingsResponse,
     SearchResponse,
     SetupRequest,
     SyncFilterSettings,
@@ -51,13 +49,27 @@ def _serialize_files(task: DownloadTask, downloader_files: list[dict] | None = N
             if not is_metadata_file(item)
         ]
     root = Path(task.staging_dir)
-    if not root.exists():
+    if root.is_symlink() or not root.exists():
+        return []
+    resolved_root = root.resolve()
+    download_root = settings.download_dir.resolve()
+    if resolved_root == download_root or not resolved_root.is_relative_to(download_root):
         return []
     files = []
-    for path in root.rglob("*"):
+    candidates = [root] if root.is_file() else root.rglob("*")
+    for path in candidates:
+        if path.is_symlink() or not path.resolve().is_relative_to(resolved_root):
+            continue
         if path.is_file() and not path.name.startswith(".aria2"):
-            files.append({"path": str(path.relative_to(root)), "length": path.stat().st_size, "completed_length": path.stat().st_size, "selected": True})
-    return files[:500]
+            try:
+                size = path.stat().st_size
+            except FileNotFoundError:
+                continue  # Organizing may move a file while this list is built.
+            name = path.name if root.is_file() else str(path.relative_to(root))
+            files.append({"path": name, "length": size, "completed_length": size, "selected": True})
+            if len(files) >= 500:
+                break
+    return files
 
 
 def task_response(task: DownloadTask, downloader_files: list[dict] | None = None) -> DownloadResponse:
@@ -83,7 +95,7 @@ settings = get_settings()
 engine, session_factory = create_database(settings)
 downloader = QBittorrentClient(settings)
 manager = DownloadManager(settings, session_factory, downloader)
-search_service = SearchService(lambda proxy: SukebeiAdapter(settings.indexer_base_url, settings.request_timeout_seconds, proxy), settings.search_cache_seconds)
+search_service = SearchService(lambda: SukebeiAdapter(settings.indexer_base_url, settings.request_timeout_seconds), settings.search_cache_seconds)
 login_attempts: dict[str, list[float]] = defaultdict(list)
 
 
@@ -104,8 +116,9 @@ async def lifespan(app: FastAPI):
         await connection.run_sync(Base.metadata.create_all)
     await ensure_setup_token()
     async with session_factory() as session:
-        downloader_proxy = await session.get(Setting, "downloader_proxy")
-        downloader.proxy = downloader_proxy.value if downloader_proxy and downloader_proxy.value else None
+        # Remove obsolete proxy settings, including any stored credentials.
+        await session.execute(delete(Setting).where(Setting.key.in_(["indexer_proxy", "downloader_proxy"])))
+        await session.commit()
     try:
         await manager.start()
     except Exception:
@@ -250,11 +263,9 @@ async def search(
     sort: str = Query(default=""),
     order: str = Query(default="desc"),
     context=Depends(require_user),
-    session: AsyncSession = Depends(db_session),
 ):
-    proxy_setting = await session.get(Setting, "indexer_proxy")
     try:
-        return await search_service.search(q, category, page, sort, order, proxy_setting.value if proxy_setting else None)
+        return await search_service.search(q, category, page, sort, order)
     except IndexerError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -319,49 +330,6 @@ async def delete_history(task_id: str, context=Depends(require_write), session: 
     return {"ok": True}
 
 
-@app.get("/api/settings/proxy", response_model=ProxySettingsResponse)
-async def get_proxy(context=Depends(require_user), session: AsyncSession = Depends(db_session)):
-    values = {}
-    for key in ("indexer_proxy", "downloader_proxy"):
-        setting = await session.get(Setting, key)
-        # Never return proxy credentials to the browser. The UI can replace a
-        # configured proxy by entering a complete new URL.
-        values[key] = None
-        values[f"{key}_configured"] = bool(setting and setting.value)
-    return ProxySettingsResponse(**values)
-
-
-@app.put("/api/settings/proxy", response_model=ProxySettingsResponse)
-async def put_proxy(payload: ProxySettings, context=Depends(require_write), session: AsyncSession = Depends(db_session)):
-    previous_downloader_proxy = (await session.get(Setting, "downloader_proxy"))
-    previous_downloader_proxy = previous_downloader_proxy.value if previous_downloader_proxy else None
-    for key in payload.model_fields_set:
-        value = getattr(payload, key)
-        setting = await session.get(Setting, key)
-        if setting:
-            setting.value = value or ""
-        else:
-            session.add(Setting(key=key, value=value or ""))
-    await session.commit()
-    # The download proxy is applied on restart; clear the cached search adapter immediately.
-    search_service.cache.clear()
-    downloader_changed = "downloader_proxy" in payload.model_fields_set
-    if downloader_changed and previous_downloader_proxy != payload.downloader_proxy:
-        downloader.proxy = payload.downloader_proxy
-        try:
-            await downloader.stop()
-            await downloader.start()
-        except Exception:
-            logger.exception("应用 qBittorrent 连接代理设置失败")
-    values = {}
-    for key in ("indexer_proxy", "downloader_proxy"):
-        setting = await session.get(Setting, key)
-        values[f"{key}_configured"] = bool(setting and setting.value)
-    return ProxySettingsResponse(
-        **values,
-    )
-
-
 @app.get("/api/settings/filters")
 async def get_filters(context=Depends(require_user), session: AsyncSession = Depends(db_session)):
     values: dict[str, str] = {}
@@ -416,4 +384,3 @@ async def spa(path: str):
     if index.exists():
         return FileResponse(index)
     return JSONResponse({"detail": "前端尚未构建，请运行 npm run build"}, status_code=404)
-

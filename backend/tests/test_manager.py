@@ -2,7 +2,55 @@ from pathlib import Path
 
 from app.downloader import DownloaderError
 from app.manager import DownloadManager
-from app.models import DownloadTask
+from app.models import DownloadTask, utc_now
+
+
+async def test_retry_organizing_failure_uses_existing_download(tmp_path: Path):
+    from types import SimpleNamespace
+
+    task = _task(tmp_path)
+    task.status = "failed"
+    task.completed_at = utc_now()
+    task.error = "整理失败：文件名过长"
+    staging = Path(task.staging_dir)
+    staging.mkdir()
+    (staging / "video.mp4").write_bytes(b"payload")
+    library = tmp_path / "library"
+    library.mkdir()
+    manager = DownloadManager(
+        SimpleNamespace(download_dir=tmp_path, library_dir=library),
+        _ActionSessionFactory(task),
+        _ActionDownloader(),  # No add_magnet: retry must not redownload.
+    )
+    result = await manager.action(task.id, "retry")
+    assert result.status == "moved"
+    assert result.error is None
+    assert (library / "video.mp4").read_bytes() == b"payload"
+    assert not staging.exists()
+
+
+async def test_retry_download_failure_resets_stale_progress(tmp_path: Path):
+    from types import SimpleNamespace
+
+    task = _task(tmp_path)
+    task.status = "failed"
+    task.completed_at = utc_now()
+    task.completed_bytes = 50
+    task.total_bytes = 100
+    task.download_speed = 20
+    task.eta_seconds = 3
+
+    class RetryDownloader(_ActionDownloader):
+        async def add_magnet(self, magnet, directory):
+            return "new-gid"
+
+    manager = DownloadManager(SimpleNamespace(download_dir=tmp_path), _ActionSessionFactory(task), RetryDownloader())
+    result = await manager.action(task.id, "retry")
+    assert result.status == "waiting"
+    assert result.gid == "new-gid"
+    assert result.completed_at is None
+    assert result.completed_bytes == result.total_bytes == result.download_speed == 0
+    assert result.eta_seconds is None
 
 
 class _Result:
@@ -227,4 +275,3 @@ async def test_delete_staging_accepts_a_single_file(tmp_path: Path):
 
     assert await manager._delete_staging(str(file_path)) is None
     assert not file_path.exists()
-

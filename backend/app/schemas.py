@@ -1,6 +1,5 @@
 from datetime import datetime
 import re
-from urllib.parse import urlparse
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -48,37 +47,6 @@ class DownloadActionRequest(BaseModel):
     delete_files: bool = True
 
 
-class ProxySettings(BaseModel):
-    indexer_proxy: str | None = None
-    downloader_proxy: str | None = None
-
-    @field_validator("indexer_proxy", "downloader_proxy")
-    @classmethod
-    def validate_proxy(cls, value: str | None) -> str | None:
-        if value in (None, ""):
-            return None
-        if any(ord(char) < 32 or char.isspace() for char in value):
-            raise ValueError("代理地址不能包含控制字符")
-        lower = value.lower()
-        if not lower.startswith(("http://", "https://", "socks5://", "socks5h://")):
-            raise ValueError("代理必须使用 http、https、socks5 或 socks5h 协议")
-        parsed = urlparse(value)
-        if not parsed.hostname:
-            raise ValueError("代理地址缺少主机名")
-        try:
-            parsed.port
-        except ValueError as exc:
-            raise ValueError("代理端口无效") from exc
-        return value
-
-
-class ProxySettingsResponse(BaseModel):
-    indexer_proxy: str | None = None
-    downloader_proxy: str | None = None
-    indexer_proxy_configured: bool = False
-    downloader_proxy_configured: bool = False
-
-
 class SyncFilterSettings(BaseModel):
     filename_regex: str | None = Field(default=None, max_length=200)
     min_size_bytes: int | None = Field(default=None, ge=0, le=2**63 - 1)
@@ -122,4 +90,3 @@ class DownloadListResponse(BaseModel):
 class ActionResponse(BaseModel):
     ok: bool = True
     task: DownloadResponse | None = None
-

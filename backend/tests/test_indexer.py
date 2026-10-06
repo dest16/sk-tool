@@ -4,7 +4,6 @@ import httpx
 import pytest
 
 from app.indexer import IndexerError, SukebeiAdapter, btih_from_magnet, parse_size
-from app.schemas import ProxySettings
 
 
 def test_parse_fixture(fixture_dir: Path):
@@ -62,9 +61,3 @@ async def test_fetch_encodes_allowlisted_query(fixture_dir: Path):
     finally:
         await client.aclose()
     assert len(result.items) == 2
-
-
-def test_proxy_validation_rejects_config_injection():
-    with pytest.raises(ValueError):
-        ProxySettings(indexer_proxy="http://proxy.test:8080\nall-proxy=bad")
-
