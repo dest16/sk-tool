@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8080
     config_dir: Path = Path("/config") if os.name != "nt" else Path("data/config")
-    download_dir: Path = Path("/downloads") if os.name != "nt" else Path("data/downloads")
+    download_dir: Path = Path("/downloads/18x") if os.name != "nt" else Path("data/downloads/18x")
     library_dir: Path = Path("/library") if os.name != "nt" else Path("data/library")
     indexer_base_url: str = "https://sukebei.nyaa.si/"
     request_timeout_seconds: float = Field(default=20.0, ge=2, le=120)
